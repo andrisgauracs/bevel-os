@@ -21,9 +21,11 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/reent.h>
-#include "esp_ipc.h"
-#include "xtensa_api.h"
-#include "xtensa_context.h"
+#include "esp_attr.h"
+#include "riscv/rvruntime-frames.h"
+#include "riscv/csr.h"
+#include "display.h"
+#include "audio.h"
 #include "wm.h"
 #include "apps.h"
 #include "os.h"
@@ -47,6 +49,7 @@ typedef struct {
     widget_t *canvas_w;
     uint8_t *canvas;
     int cw, ch;
+    int overlay;                // true-colour layer over the canvas, or -1
     gfx_t g;
     QueueHandle_t q;
     volatile int in_api;
@@ -90,7 +93,9 @@ static void push_event(app_t *a, const bv_event_t *e)
 static void cv_paint(widget_t *w, gfx_t *g)
 {
     app_t *a = w->win->user;
-    if (a && a->canvas) gfx_blit(g, 0, 0, a->cw, a->ch, a->canvas, a->cw);
+    if (!a || !a->canvas) return;
+    if (a->overlay >= 0) disp_overlay_place(a->overlay, g->ox, g->oy);
+    gfx_blit(g, 0, 0, a->cw, a->ch, a->canvas, a->cw);
 }
 
 static bool cv_key(widget_t *w, const event_t *e)
@@ -134,7 +139,7 @@ static void gui_open(void *arg)
     if (a->win) return;
     if (r->w < 64) r->w = 64;
     if (r->h < 32) r->h = 32;
-    if (r->w > VGA_W) r->w = VGA_W;
+    if (r->w > SCREEN_W) r->w = SCREEN_W;
     if (r->h > DESK_H - TITLE_H - 2 * BORDER_W - 1) r->h = DESK_H - TITLE_H - 2 * BORDER_W - 1;
     a->canvas = heap_caps_aligned_alloc(16, r->w * r->h + 16, MALLOC_CAP_SPIRAM);
     if (!a->canvas) return;
@@ -149,7 +154,7 @@ static void gui_open(void *arg)
     w->on_close = appwin_close;
     a->canvas_w = ui_canvas(w, 0, 0, r->w, r->h, &cv_ops, true);
     a->win = w;
-    if (w->r.w > VGA_W) { w->r.x = (VGA_W - w->r.w) / 2; w->r.y = 8; }   // full-width canvas: borders hang off the sides
+    if (w->r.w > SCREEN_W) { w->r.x = (SCREEN_W - w->r.w) / 2; w->r.y = 8; }   // full-width canvas: borders hang off the sides
     wm_show(w);
     r->res = 0;
 }
@@ -300,7 +305,7 @@ static void *api_alloc(int bytes)
 {
     ENTER_R(NULL);
     void *res = NULL;
-    if (bytes > 0 && bytes <= 6 * 1024 * 1024) {
+    if (bytes > 0 && bytes <= 16 * 1024 * 1024) {
         mem_hdr_t *h = heap_caps_malloc(sizeof(mem_hdr_t) + bytes, MALLOC_CAP_SPIRAM);
         if (h) {
             h->size = bytes; h->magic = APP_MAGIC; h->prev = NULL; h->next = a->mem;
@@ -348,6 +353,47 @@ static uint8_t *api_canvas(int *w, int *h)
     if (w) *w = a->cw;
     if (h) *h = a->ch;
     return a->canvas;
+}
+
+// --- API version 2: sound and true colour
+
+static int api_snd_play(const void *pcm, int frames, int rate, int format, int volume, int pan)
+{
+    app_t *a = cur_app();
+    return a ? audio_play(pcm, frames, rate, format, volume, pan, a) : 0;
+}
+static void api_snd_set(int voice, int volume, int pan) { audio_voice_set(voice, volume, pan); }
+static int api_snd_playing(int voice) { return audio_playing(voice); }
+static void api_snd_stop(int voice) { audio_stop(voice); }
+
+static void gui_key_canvas(void *arg)
+{
+    app_t *a = arg;
+    if (a->used && a->canvas && a->overlay >= 0) {
+        memset(a->canvas, DISP_OVERLAY_KEY(a->overlay), a->cw * a->ch);
+        if (a->canvas_w) ui_invalidate(a->canvas_w);
+    }
+}
+
+static uint16_t *api_canvas16(int *w, int *h)
+{
+    ENTER_R(NULL);
+    uint16_t *px = NULL;
+    if (a->canvas) {
+        if (a->overlay < 0) {
+            a->overlay = disp_overlay_alloc(a->cw, a->ch);
+            if (a->overlay >= 0) ev_call_sync(gui_key_canvas, a);   // the canvas now only says where the layer shows
+        }
+        px = disp_overlay_px(a->overlay, w, h);
+    }
+    LEAVE;
+    return px;
+}
+
+static void api_flush16(void)
+{
+    app_t *a = cur_app();
+    if (a && a->overlay >= 0) disp_overlay_update(a->overlay);
 }
 
 // ---------------------------------------------------------------- C library for apps
@@ -454,6 +500,13 @@ static int app_vfprintf(FILE *f, const char *fmt, va_list ap)
     return vfprintf(f, fmt, ap);
 }
 
+// Compiler support routines (64-bit division, double-precision arithmetic). The toolchain's libgcc is
+// not position-independent, so apps that need these import them from the OS instead of linking it.
+#define LIBGCC_LIST(X) X(__divdi3) X(__udivdi3) X(__moddi3) X(__umoddi3) X(__muldi3) X(__ashldi3) X(__lshrdi3) X(__ashrdi3) X(__clzsi2) X(__ctzsi2) X(__adddf3) X(__subdf3) X(__muldf3) X(__divdf3) X(__extendsfdf2) X(__truncdfsf2) X(__fixdfsi) X(__fixunsdfsi) X(__floatsidf) X(__floatunsidf) X(__floatdidf) X(__fixdfdi) X(__eqdf2) X(__nedf2) X(__ltdf2) X(__ledf2) X(__gtdf2) X(__gedf2) X(__unorddf2)
+#define X(n) extern void n(void);
+LIBGCC_LIST(X)
+#undef X
+
 static const struct { const char *name; void *fn; } s_overrides[] = {
     {"malloc", app_malloc}, {"free", app_free}, {"calloc", app_calloc}, {"realloc", app_realloc}, {"strdup", app_strdup},
     {"fopen", app_fopen}, {"fclose", app_fclose}, {"fread", app_fread}, {"fwrite", app_fwrite}, {"fseek", app_fseek},
@@ -465,6 +518,9 @@ static const struct { const char *name; void *fn; } s_overrides[] = {
     {"strchr", strchr}, {"strrchr", strrchr}, {"strncpy", strncpy}, {"strcpy", strcpy}, {"strcat", strcat}, {"strstr", strstr},
     {"atoi", atoi}, {"snprintf", snprintf}, {"vsnprintf", vsnprintf}, {"sscanf", sscanf}, {"abs", abs},
     {"__errno", __errno}, {"__getreent", __getreent}, {"_ctype_", (void *)_ctype_},
+#define X(n) {#n, n},
+    LIBGCC_LIST(X)
+#undef X
 };
 
 static uintptr_t app_resolver(const char *name)
@@ -480,6 +536,7 @@ static const bevel_api_t s_api = {
     BEVEL_API_VERSION, api_win_open, api_win_title, api_event, api_clear, api_fill, api_frame, api_pixel, api_line,
     api_text, api_text_width, api_blit, api_bevel, api_flush, api_flush_rect, api_file_read, api_file_write,
     api_ticks, api_sleep, api_random, api_alloc, api_free, api_msgbox, api_log, api_canvas,
+    api_snd_play, api_snd_set, api_snd_playing, api_snd_stop, api_canvas16, api_flush16,
 };
 
 // ---------------------------------------------------------------- lifecycle
@@ -493,7 +550,9 @@ static void gui_cleanup(void *arg)
 // Free everything an app owned. GUI task, after the app's task is gone.
 static void app_release(app_t *a)
 {
+    audio_stop_owner(a);
     gui_cleanup(a);
+    if (a->overlay >= 0) { disp_overlay_free(a->overlay); a->overlay = -1; }
     for (int i = 0; i < MAX_APP_FILES; i++) if (a->files[i]) { fclose(a->files[i]); a->files[i] = NULL; }
     for (mem_hdr_t *h = a->mem; h;) { mem_hdr_t *n = h->next; free(h); h = n; }
     a->mem = NULL;
@@ -528,10 +587,10 @@ static void gui_app_crashed(void *arg)
     if (!a->used) return;
     char name[40], msg[200];
     strlcpy(name, a->name, sizeof(name));
-    static const char *const causes[] = {[0] = "an illegal instruction", [2] = "a bad instruction address", [3] = "a memory access error",
-        [6] = "a division by zero", [9] = "an unaligned memory access", [20] = "a jump to an invalid address",
-        [28] = "reading an invalid address", [29] = "writing to an invalid address"};
-    const char *why = a->crash_cause < 30 && causes[a->crash_cause] ? causes[a->crash_cause] : "an error";
+    static const char *const causes[] = {[0] = "a jump to an invalid address", [1] = "a jump to an invalid address",
+        [2] = "an illegal instruction", [3] = "a breakpoint", [4] = "an unaligned memory access", [5] = "reading an invalid address",
+        [6] = "an unaligned memory access", [7] = "writing to an invalid address"};
+    const char *why = a->crash_cause < 8 && causes[a->crash_cause] ? causes[a->crash_cause] : "an error";
     snprintf(msg, sizeof(msg), "%s has stopped because of %s (at 0x%08x, address 0x%08x).\n\nIt was closed. Everything else keeps running.",
              name, why, (unsigned)a->crash_pc, (unsigned)a->crash_addr);
     serial_printf("[app] %s crashed: cause %u pc %08x addr %08x\n", name, (unsigned)a->crash_cause, (unsigned)a->crash_pc, (unsigned)a->crash_addr);
@@ -548,31 +607,24 @@ static void app_crash_landing(void)
     for (;;) vTaskSuspend(NULL);
 }
 
-static void app_exception(XtExcFrame *frame)
+// Every CPU exception that is not an interrupt passes through here (the linker wraps ESP-IDF's
+// xt_unhandled_exception, see main/CMakeLists.txt). A fault in an app's own code is turned into a
+// jump to the landing function; anything else goes on to the normal panic handler.
+extern void __real_xt_unhandled_exception(void *frame);
+void IRAM_ATTR __wrap_xt_unhandled_exception(void *frame)
 {
-    extern void xt_unhandled_exception(XtExcFrame *frame);
+    RvExcFrame *f = frame;
     app_t *a = xPortInIsrContext() ? NULL : cur_app();
-    if (!a || a->crashed || a->in_api) { xt_unhandled_exception(frame); return; }
-    a->crash_cause = frame->exccause;
-    a->crash_pc = frame->pc;
-    a->crash_addr = frame->excvaddr;
-    frame->pc = (uint32_t)app_crash_landing;
-    frame->ps &= ~(3u << 16);       // CALLINC = 0, so the landing function's ENTRY does not rotate the window
-    frame->lcount = 0;
-}
-
-static void install_handlers(void *arg)
-{
-    // the exception table is per core
-    static const int causes[] = {0, 2, 3, 6, 9, 20, 28, 29};
-    for (int i = 0; i < (int)(sizeof(causes) / sizeof(causes[0])); i++) xt_set_exception_handler(causes[i], app_exception);
+    if (!a || a->crashed || a->in_api || f->mcause >= 8) { __real_xt_unhandled_exception(frame); return; }
+    a->crash_cause = f->mcause;
+    a->crash_pc = f->mepc;
+    a->crash_addr = RV_READ_CSR(mtval);
+    f->mepc = (uint32_t)app_crash_landing;
 }
 
 void app_loader_init(void)
 {
-    install_handlers(NULL);
     elf_set_symbol_resolver(app_resolver);
-    esp_ipc_call_blocking(1 - xPortGetCoreID(), install_handlers, NULL);
 }
 
 void os_run_elf(const char *path)
@@ -593,6 +645,7 @@ void os_run_elf(const char *path)
     }
     const char *err = NULL;
     memset(a, 0, sizeof(*a));
+    a->overlay = -1;
     if (!img) err = "The program file could not be read.";
     else if (len < 52 || memcmp(img, "\x7f" "ELF", 4)) err = "This file is not a program for Bevel OS.";
     else {

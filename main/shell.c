@@ -1,6 +1,7 @@
 // The shell: desktop icons, taskbar, main menu, Alt+Tab switcher, global keys, shut-down dialog.
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <ctype.h>
 #include "wm.h"
 #include "comp.h"
@@ -44,7 +45,7 @@ static bool s_gui_clean;
 
 bool shell_has_focus(void) { return s_focus != SF_NONE && !wm_active(); }
 
-static void inval_taskbar(void) { comp_invalidate(0, DESK_H, VGA_W, TASKBAR_H); }
+static void inval_taskbar(void) { comp_invalidate(0, DESK_H, SCREEN_W, TASKBAR_H); }
 
 static void desk_cell(int i, rect_t *r)
 {
@@ -116,7 +117,7 @@ void shell_windows_changed(void)
 
 static void task_btn_rect(int i, rect_t *r)
 {
-    int avail = VGA_W - TB_BTN_X - CLOCK_W - 8;
+    int avail = SCREEN_W - TB_BTN_X - CLOCK_W - 8;
     int bw = s_ntasks ? avail / s_ntasks : 0;
     if (bw > 150) bw = 150;
     *r = rect_make(TB_BTN_X + i * bw, DESK_H + 4, bw - 3, TASKBAR_H - 6);
@@ -126,7 +127,7 @@ static void task_btn_rect(int i, rect_t *r)
 
 void shell_paint_desktop(gfx_t *g, const rect_t *area)
 {
-    gfx_fill(g, 0, 0, VGA_W, DESK_H, shell_desktop_color);
+    gfx_fill(g, 0, 0, SCREEN_W, DESK_H, shell_desktop_color);
     for (int i = 0; i < s_desk_n; i++) {
         rect_t r;
         desk_cell(i, &r);
@@ -149,17 +150,25 @@ void shell_paint_desktop(gfx_t *g, const rect_t *area)
     }
 }
 
+// The time of day once the network or the clock chip has supplied it; the uptime until then.
 static void fmt_clock(char *buf, int n)
 {
+    if (clock_valid()) {
+        time_t now = time(NULL);
+        struct tm tm;
+        localtime_r(&now, &tm);
+        snprintf(buf, n, "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+        return;
+    }
     uint32_t s = os_uptime_ms() / 1000;
     snprintf(buf, n, "%u:%02u:%02u", (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
 }
 
 void shell_paint_taskbar(gfx_t *g, const rect_t *area)
 {
-    gfx_fill(g, 0, DESK_H, VGA_W, TASKBAR_H, C_FACE);
-    gfx_hline(g, 0, DESK_H, VGA_W, C_FACE);
-    gfx_hline(g, 0, DESK_H + 1, VGA_W, C_HILIGHT);
+    gfx_fill(g, 0, DESK_H, SCREEN_W, TASKBAR_H, C_FACE);
+    gfx_hline(g, 0, DESK_H, SCREEN_W, C_FACE);
+    gfx_hline(g, 0, DESK_H + 1, SCREEN_W, C_HILIGHT);
     bool tb_focus = s_focus == SF_TASKBAR && !wm_active() && !menu_is_open();
     // menu button
     int by = DESK_H + 4, bh = TASKBAR_H - 6;
@@ -188,8 +197,8 @@ void shell_paint_taskbar(gfx_t *g, const rect_t *area)
         gfx_restore(g, &st);
         if (tb_focus && s_tb_sel == i + 1) gfx_dotted(g, r.x + 3, r.y + 3, r.w - 6, r.h - 6, C_BLACK);
     }
-    // clock (uptime: there is no real-time clock on the board)
-    int cx = VGA_W - CLOCK_W - 3;
+    // clock
+    int cx = SCREEN_W - CLOCK_W - 3;
     gfx_bevel(g, cx, by, CLOCK_W, bh, C_SHADOW, C_HILIGHT);
     char buf[16];
     fmt_clock(buf, sizeof(buf));
@@ -200,7 +209,7 @@ void shell_paint_overlay(gfx_t *g, const rect_t *area)
 {
     if (!s_switching) return;
     int w = 300, h = 34 + s_sw_n * 22;
-    int x = (VGA_W - w) / 2, y = (DESK_H - h) / 2;
+    int x = (SCREEN_W - w) / 2, y = (DESK_H - h) / 2;
     gfx_fill(g, x, y, w, h, C_FACE);
     ui_draw_raised(g, x, y, w, h);
     gfx_text(g, x + 10, y + 8, "Switch to", -1, FONT_UI_BOLD, C_TEXT);
@@ -220,7 +229,7 @@ void shell_paint_overlay(gfx_t *g, const rect_t *area)
 static void inval_switcher(void)
 {
     int w = 300, h = 34 + s_sw_n * 22;
-    comp_invalidate((VGA_W - w) / 2, (DESK_H - h) / 2, w, h);
+    comp_invalidate((SCREEN_W - w) / 2, (DESK_H - h) / 2, w, h);
 }
 
 // ---------------------------------------------------------------- main menu
@@ -274,16 +283,17 @@ void shell_open_start_menu(void)
 
 static void halt_screen(void)
 {
-    uint8_t *fb = vga_fb();
+    uint8_t *fb = disp_fb();
     gfx_t g;
-    vga_cursor_show(false);
-    gfx_init(&g, fb, VGA_W, 0, 0, VGA_W, VGA_H);
-    gfx_fill(&g, 0, 0, VGA_W, VGA_H, C_BLACK);
+    disp_cursor_show(false);
+    gfx_init(&g, fb, SCREEN_W, 0, 0, SCREEN_W, SCREEN_H);
+    gfx_fill(&g, 0, 0, SCREEN_W, SCREEN_H, C_BLACK);
     const char *m1 = OS_NAME " has shut down.";
     const char *m2 = "It is safe to unplug it. Press any key to start again.";
-    gfx_bitmap(&g, (VGA_W - 32) / 2, 180, &icon32_logo);
-    gfx_text(&g, (VGA_W - gfx_text_w(m1, -1, FONT_UI_BOLD)) / 2, 226, m1, -1, FONT_UI_BOLD, C_ORANGE);
-    gfx_text(&g, (VGA_W - gfx_text_w(m2, -1, FONT_UI)) / 2, 246, m2, -1, FONT_UI, C_GREY);
+    gfx_bitmap(&g, (SCREEN_W - 32) / 2, SCREEN_H / 2 - 60, &icon32_logo);
+    gfx_text(&g, (SCREEN_W - gfx_text_w(m1, -1, FONT_UI_BOLD)) / 2, SCREEN_H / 2 - 14, m1, -1, FONT_UI_BOLD, C_ORANGE);
+    gfx_text(&g, (SCREEN_W - gfx_text_w(m2, -1, FONT_UI)) / 2, SCREEN_H / 2 + 6, m2, -1, FONT_UI, C_GREY);
+    disp_present(0, 0, SCREEN_W, SCREEN_H);
 }
 
 static void sd_btn(widget_t *w, int code) { wm_end_modal(w->win, w->id); }
@@ -522,7 +532,7 @@ void shell_mouse(int type, int x, int y, int btn, int clicks)
 
 static void clock_tick(void *arg)
 {
-    comp_invalidate(VGA_W - CLOCK_W - 3, DESK_H + 4, CLOCK_W, TASKBAR_H - 6);
+    comp_invalidate(SCREEN_W - CLOCK_W - 3, DESK_H + 4, CLOCK_W, TASKBAR_H - 6);
 }
 
 void shell_init(void)

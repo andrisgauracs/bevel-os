@@ -71,8 +71,6 @@ int gfx_label_w(const char *s, int font);
 int gfx_label(gfx_t *g, int x, int y, const char *s, int font, uint8_t fg, bool underline);
 char gfx_label_mnemonic(const char *s);                                   // lower-case letter or 0
 
-// Raw kernels (also used by the compositor and the benchmarks).
-void pie_copy16(void *dst, const void *src, int blocks);
-void pie_fill16(void *dst, int byte, int blocks);
-void k_copy(uint8_t *dst, const uint8_t *src, int n);  // picks PIE when both ends are 16-byte aligned
+// Raw kernels
+void k_copy(uint8_t *dst, const uint8_t *src, int n);
 void k_fill(uint8_t *dst, uint8_t c, int n);

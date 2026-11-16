@@ -8,12 +8,12 @@
 
 #define OS_NAME "Bevel OS"
 #define OS_VERSION "1.0"
+#define OS_CHIP "ESP32-P4"
 
 // Which core runs what. The GUI task (window manager, compositor, built-in apps) lives on
 // GUI_CORE; USB, SD card, serial and loaded apps live on the other one.
 #define GUI_CORE 1
 #define SYS_CORE 0
-#define VGA_ISR_CORE 1
 
 // serial.c
 void serial_start(void);
@@ -28,18 +28,34 @@ extern int perf_count;
 void perf_run(const char *which);   // call in the GUI task; "all" or a group name
 uint32_t os_uptime_ms(void);
 
-// Hooks filled in by later subsystems (SD card, loaded apps)
+// Hooks filled in by later subsystems (storage, loaded apps)
+void os_disk_summary(char *buf, int n);     // the internal drive: "9.1 MB free of 11.9 MB (flash)"
 void os_sd_summary(char *buf, int n);       // "1.9 GB free of 3.7 GB" / "no card"
 int  os_task_mem_kb(int task_id);           // -1 for system windows
 bool os_task_kill(int task_id);             // false if task_id is not a loaded app
 
 // storage.c
 #define DISK_ROOT "/disk"
+#define SD_ROOT DISK_ROOT "/SD"            // where a microSD card appears
+bool storage_sd_ok(void);
 bool storage_init(void);
 bool storage_ok(void);
 bool storage_df(uint64_t *total, uint64_t *free_bytes);
+bool storage_df_path(const char *path, uint64_t *total, uint64_t *free_bytes);  // of the volume holding path
 void storage_unmount(void);
 void os_fmt_size(char *buf, int n, uint64_t bytes);
+
+// main.c
+extern volatile bool os_c6_link_up;       // ESP-Hosted has its SDIO link to the ESP32-C6 running
+
+// clock.c
+void clock_init(void);                      // reads the clock chip, if there is one
+bool clock_valid(void);                     // the time of day is known
+const char *clock_source(void);
+int  clock_zone_count(void);
+const char *clock_zone_name(int i);
+int  clock_zone(void);
+void clock_set_zone(int i);
 
 // Grow a PSRAM block. Unlike realloc, the copy happens outside the allocator's lock, so a large
 // block never stalls interrupts (the display's scan-out) while it is moved.

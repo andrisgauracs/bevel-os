@@ -15,9 +15,9 @@ typedef struct { uint8_t w, h; int8_t hot_x, hot_y; const uint8_t *px; } bitmap_
 // 16x16 and 32x32 icons
 extern const bitmap_t icon16_folder, icon16_file, icon16_text, icon16_image, icon16_app, icon16_game,
     icon16_drive, icon16_settings, icon16_computer, icon16_terminal, icon16_help, icon16_shutdown,
-    icon16_logo, icon16_tasks, icon16_up;
+    icon16_logo, icon16_tasks, icon16_up, icon16_camera, icon16_sound;
 extern const bitmap_t icon32_folder, icon32_file, icon32_text, icon32_image, icon32_app, icon32_game,
     icon32_drive, icon32_settings, icon32_computer, icon32_terminal, icon32_help, icon32_shutdown,
-    icon32_logo, icon32_tasks, icon32_info, icon32_warning, icon32_error, icon32_question;
+    icon32_logo, icon32_tasks, icon32_info, icon32_warning, icon32_error, icon32_question, icon32_camera, icon32_sound;
 // Mouse cursors (max 16 wide, max 20 tall), black outline + white fill style, hot spot set
 extern const bitmap_t cursor_arrow, cursor_ibeam, cursor_busy, cursor_size_we, cursor_size_ns, cursor_size_nwse, cursor_move;

@@ -37,9 +37,9 @@ TRANSPARENT = 0xFF
 
 # Names required by assets.h. Extra files in the folders are emitted too.
 ICON16 = ["folder", "file", "text", "image", "app", "game", "drive", "settings", "computer",
-          "terminal", "help", "shutdown", "logo", "tasks", "up"]
+          "terminal", "help", "shutdown", "logo", "tasks", "up", "camera", "sound"]
 ICON32 = ["folder", "file", "text", "image", "app", "game", "drive", "settings", "computer",
-          "terminal", "help", "shutdown", "logo", "tasks", "info", "warning", "error", "question"]
+          "terminal", "help", "shutdown", "logo", "tasks", "info", "warning", "error", "question", "camera", "sound"]
 CURSORS = ["arrow", "ibeam", "busy", "size_we", "size_ns", "size_nwse", "move"]
 CURSOR_MAX_W, CURSOR_MAX_H = 16, 20
 

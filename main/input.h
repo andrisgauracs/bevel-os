@@ -58,6 +58,8 @@ void input_key(uint8_t usage, bool down);
 void input_kbd_report(uint8_t mod_bits, const uint8_t *keys, int nkeys); // boot-protocol style report
 void input_mouse_rel(int dx, int dy);
 void input_mouse_abs(int x, int y);               // screen pixels
+void input_touch(int x, int y, bool down);        // touchscreen: a finger is the left button
+bool input_touching(void);                        // the last pointer input came from the touchscreen
 void input_mouse_buttons(uint8_t mask);           // BTN_* bitmask, full state
 void input_wheel(int delta);
 void input_release_all(void);                     // device unplugged

@@ -1,8 +1,9 @@
-// Input: turns raw key/mouse data into events for the GUI task. The mouse pointer itself is moved
-// right here (it is a scan-out sprite), so it tracks the mouse even while the GUI task is busy.
+// Input: turns raw key/mouse/touch data into events for the GUI task. The mouse pointer itself is
+// moved right here (the display draws it over the picture), so it tracks the mouse even while the
+// GUI task is busy.
 #include <string.h>
 #include "input.h"
-#include "vga.h"
+#include "display.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -10,7 +11,7 @@
 #include "esp_timer.h"
 
 static QueueHandle_t s_q;
-static volatile int s_mx = VGA_W / 2, s_my = VGA_H / 2;
+static volatile int s_mx = SCREEN_W / 2, s_my = SCREEN_H / 2;
 static int s_frac_x, s_frac_y;
 static volatile uint8_t s_mods, s_buttons;
 static volatile bool s_move_pending, s_mouse_seen;
@@ -184,7 +185,7 @@ void input_release_all(void)
 static void post_move(void)
 {
     s_mouse_seen = true;
-    vga_cursor_move(s_mx, s_my);
+    disp_cursor_move(s_mx, s_my);
     if (!s_move_pending) {
         s_move_pending = true;
         event_t e = {.type = EV_MOUSE_MOVE};
@@ -192,16 +193,47 @@ static void post_move(void)
     }
 }
 
-void input_mouse_abs(int x, int y)
+// The pointer is hidden while the touchscreen is in use and comes back with the mouse.
+static volatile bool s_touching, s_ptr_hidden;
+
+static void pointer_wanted(bool on)
+{
+    if (s_ptr_hidden == !on) return;
+    s_ptr_hidden = !on;
+    disp_cursor_show(on);
+}
+
+static void mouse_to(int x, int y)
 {
     if (x < 0) x = 0;
     if (y < 0) y = 0;
-    if (x > VGA_W - 1) x = VGA_W - 1;
-    if (y > VGA_H - 1) y = VGA_H - 1;
+    if (x > SCREEN_W - 1) x = SCREEN_W - 1;
+    if (y > SCREEN_H - 1) y = SCREEN_H - 1;
     if (x == s_mx && y == s_my) return;
     s_mx = x; s_my = y;
     post_move();
 }
+
+void input_mouse_abs(int x, int y)
+{
+    if (s_ptr_hidden) pointer_wanted(true);
+    mouse_to(x, y);
+}
+
+void input_touch(int x, int y, bool down)
+{
+    if (down) {
+        if (!s_touching) pointer_wanted(false);
+        s_touching = true;
+        mouse_to(x, y);
+        if (!(s_buttons & BTN_LEFT)) input_mouse_buttons(s_buttons | BTN_LEFT);
+    } else {
+        s_touching = false;
+        input_mouse_buttons(s_buttons & ~BTN_LEFT);
+    }
+}
+
+bool input_touching(void) { return s_ptr_hidden; }
 
 void input_mouse_rel(int dx, int dy)
 {
@@ -213,7 +245,8 @@ void input_mouse_rel(int dx, int dy)
     s_frac_y += dy * gain;
     int mx = s_frac_x / 5, my = s_frac_y / 5;
     s_frac_x -= mx * 5; s_frac_y -= my * 5;
-    input_mouse_abs(s_mx + mx, s_my + my);
+    if (s_ptr_hidden) pointer_wanted(true);
+    mouse_to(s_mx + mx, s_my + my);
 }
 
 void input_mouse_buttons(uint8_t mask)

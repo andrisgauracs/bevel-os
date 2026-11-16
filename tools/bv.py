@@ -1,23 +1,33 @@
 #!/usr/bin/env python3
 """Bevel OS serial tool.
 
-The board's COM port must be held open by one process (opening it can reset the board), so a
-small daemon owns the port, logs everything to build/serial.log, and serves commands on
-localhost.
+The board's USB-Serial-JTAG port ("USB1") carries the log and the command channel. Only one
+process can have it open, so a small daemon owns the port, logs everything to build/serial.log,
+and serves commands on localhost.
 
   bv.py daemon                 hold the port (run in the background)
   bv.py cmd "<line>" [secs]    send a command line, print the reply up to @@OK / @@ERR
   bv.py dump out.png [nocursor] save the framebuffer as PNG (pixel exact)
   bv.py put local remote      copy a file to the drive (remote like /disk/Apps/x.wad)
-  bv.py reset                  reset the board (EN pulse) and print the boot log
+  bv.py reset                  restart the board ("reboot" command) and print the boot log
   bv.py log [lines]            tail of the serial log
   bv.py quit                   stop the daemon (needed before flashing)
 """
 import glob, os, sys, socket, struct, threading, time, zlib
 
-# Serial port of the board's COM (UART) USB port: set BV_PORT, or the first USB serial device is used.
-PORT = os.environ.get("BV_PORT") or next(iter(sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))), "/dev/ttyUSB0")
-BAUD = int(os.environ.get("BV_BAUD", "2000000"))
+def find_port():
+    """BV_PORT, else the first Espressif USB-Serial-JTAG device (303A:1001), else a likely default."""
+    if os.environ.get("BV_PORT"): return os.environ["BV_PORT"]
+    try:
+        from serial.tools import list_ports
+        for p in list_ports.comports():
+            if p.vid == 0x303A and p.pid == 0x1001: return p.device
+    except Exception:
+        pass
+    return next(iter(sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*"))), "COM13" if os.name == "nt" else "/dev/ttyACM0")
+
+
+BAUD = 115200   # ignored by the USB-Serial-JTAG port
 ADDR = ("127.0.0.1", 47811)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG = os.path.join(ROOT, "build", "serial.log")
@@ -27,11 +37,12 @@ ENDS = (b"@@OK", b"@@ERR", b"@@END")
 def daemon():
     import serial
     s = serial.Serial()
-    s.port = PORT; s.baudrate = BAUD; s.timeout = 0.02
+    s.port = find_port(); s.baudrate = BAUD; s.timeout = 0.02; s.write_timeout = 5
     s.dtr = False; s.rts = False
     s.open()
     lock = threading.Lock()
     listeners = []
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
     logf = open(LOG, "ab", buffering=0)
 
     def reader():
@@ -63,7 +74,7 @@ def daemon():
             q = []
             with lock: listeners.append(q)
             if line == "~reset":
-                s.rts = True; time.sleep(0.1); s.rts = False
+                s.write(b"reboot\n")     # an RTS pulse does not reset this board; the port survives the restart
             elif line != "~listen":
                 s.write(line.encode() + b"\n")
             t0 = time.time(); buf = b""; done = False
@@ -117,18 +128,23 @@ def write_png(path, w, h, rgb, scale=1):
 
 
 def dump(path, extra="", crop=None, scale=1):
-    out = request(("dump " + extra).strip(), 30)
-    i = out.find(b"@@FB ")
+    out = request(("dump " + extra).strip(), 60)
+    i = out.find(b"@@FB16 ")
     if i < 0: sys.exit("no framebuffer header in reply: %r" % out[:200])
     j = out.index(b"\n", i)
-    w, h, n = map(int, out[i + 5:j].split())
+    w, h, n = map(int, out[i + 7:j].split())
     data = out[j + 1:j + 1 + n]
     if len(data) < n: sys.exit("short dump: %d of %d bytes" % (len(data), n))
-    lv = (0, 85, 170, 255)
-    pal = [bytes((lv[p & 3], lv[(p >> 2) & 3], lv[(p >> 4) & 3])) for p in range(256)]
+    # (count, RGB565 low byte, high byte) triplets: what the panel shows, overlays and pointer included
     rgb = bytearray()
-    for k in range(0, n, 2):
-        rgb += pal[data[k + 1]] * data[k]
+    cache = {}
+    for k in range(0, n, 3):
+        v = data[k + 1] | data[k + 2] << 8
+        px = cache.get(v)
+        if px is None:
+            r, g, b = v >> 11, (v >> 5) & 63, v & 31
+            px = cache[v] = bytes((r * 255 // 31, g * 255 // 63, b * 255 // 31))
+        rgb += px * data[k]
     if len(rgb) != w * h * 3: sys.exit("bad RLE length %d" % len(rgb))
     if crop:
         x, y, cw, ch = crop

@@ -10,6 +10,8 @@
 #include "apps.h"
 #include "os.h"
 #include "comp.h"
+#include "display.h"
+#include "audio.h"
 #include "fsutil.h"
 #include "esp_heap_caps.h"
 
@@ -28,6 +30,7 @@ void settings_load(void)
 {
     int n;
     char *s = fs_read_all(SETTINGS_FILE, &n);
+    clock_set_zone(0);
     if (!s) return;
     for (char *line = strtok(s, "\r\n"); line; line = strtok(NULL, "\r\n")) {
         char *eq = strchr(line, '=');
@@ -38,6 +41,12 @@ void settings_load(void)
         else if (!strcmp(line, "mouse_speed") && v >= 1 && v <= 10) input_mouse_speed = v;
         else if (!strcmp(line, "repeat_delay") && v >= 100 && v <= 1000) input_repeat_delay = v;
         else if (!strcmp(line, "repeat_rate") && v >= 2 && v <= 50) input_repeat_rate = v;
+        else if (!strcmp(line, "brightness") && v >= 10 && v <= 100) disp_set_brightness(v);
+        else if (!strcmp(line, "volume") && v >= 0 && v <= 100) audio_volume = v;
+        else if (!strcmp(line, "sounds")) audio_system_sounds = v != 0;
+        else if (!strcmp(line, "zone")) {
+            for (int i = 0; i < clock_zone_count(); i++) if (!strcmp(eq + 1, clock_zone_name(i))) clock_set_zone(i);
+        }
     }
     free(s);
 }
@@ -47,17 +56,23 @@ bool settings_save(void)
     // temp file + rename: an unplugged cable never leaves half a settings file
     FILE *f = fopen(SETTINGS_FILE ".tmp", "wb");
     if (!f) return false;
-    fprintf(f, "desktop=%d\nmouse_speed=%d\nrepeat_delay=%d\nrepeat_rate=%d\n", shell_desktop_color, input_mouse_speed,
-            input_repeat_delay, input_repeat_rate);
+    fprintf(f, "desktop=%d\nmouse_speed=%d\nrepeat_delay=%d\nrepeat_rate=%d\nbrightness=%d\nvolume=%d\nsounds=%d\nzone=%s\n",
+            shell_desktop_color, input_mouse_speed, input_repeat_delay, input_repeat_rate, disp_get_brightness(), audio_volume,
+            audio_system_sounds, clock_zone_name(clock_zone()));
     if (fclose(f) != 0) return false;
     unlink(SETTINGS_FILE);
     return rename(SETTINGS_FILE ".tmp", SETTINGS_FILE) == 0;
 }
 
 static window_t *s_set;
-static struct { widget_t *colors, *speed, *delay, *rate, *test; uint8_t old_color; int old_speed, old_delay, old_rate; } s_sd;
+static struct {
+    widget_t *colors, *speed, *delay, *rate, *bright, *volume, *sounds, *zones;
+    uint8_t old_color; int old_speed, old_delay, old_rate, old_bright, old_volume, old_sounds, old_zone;
+} s_sd;
 
 static void colors_get(widget_t *lv, int i, lv_item_t *it) { it->text = s_colors[i].name; }
+
+static void zones_get(widget_t *lv, int i, lv_item_t *it) { it->text = clock_zone_name(i); }
 
 static void set_apply(widget_t *w, int code)
 {
@@ -66,6 +81,12 @@ static void set_apply(widget_t *w, int code)
     input_mouse_speed = ui_slider_get(s_sd.speed);
     input_repeat_delay = 100 + ui_slider_get(s_sd.delay) * 100;
     input_repeat_rate = ui_slider_get(s_sd.rate) * 5;
+    disp_set_brightness(ui_slider_get(s_sd.bright) * 10);
+    int vol = ui_slider_get(s_sd.volume) * 5;
+    audio_system_sounds = ui_checked(s_sd.sounds);
+    if (vol != audio_volume) { audio_volume = vol; if (w == s_sd.volume) audio_chime(CHIME_INFO); }
+    int z = ui_listview_sel(s_sd.zones);
+    if (z >= 0 && z != clock_zone()) clock_set_zone(z);
     // preview swatch
     for (widget_t *x = s_set->widgets; x; x = x->next) if (!strcmp(x->cls->name, "canvas")) ui_invalidate(x);
 }
@@ -92,6 +113,10 @@ static void set_cancel(widget_t *b, int code)
     input_mouse_speed = s_sd.old_speed;
     input_repeat_delay = s_sd.old_delay;
     input_repeat_rate = s_sd.old_rate;
+    disp_set_brightness(s_sd.old_bright);
+    audio_volume = s_sd.old_volume;
+    audio_system_sounds = s_sd.old_sounds;
+    clock_set_zone(s_sd.old_zone);
     comp_invalidate_all();
     wm_destroy(s_set);
 }
@@ -102,11 +127,13 @@ static void set_destroy(window_t *w) { s_set = NULL; }
 void app_settings(const char *arg)
 {
     if (s_set) { wm_activate(s_set); return; }
-    window_t *w = wm_create("Settings", 400, 292, WIN_DIALOG);
+    window_t *w = wm_create("Settings", 640, 292, WIN_DIALOG);
     w->icon = &icon16_settings;
     s_set = w;
     s_sd.old_color = shell_desktop_color; s_sd.old_speed = input_mouse_speed;
     s_sd.old_delay = input_repeat_delay; s_sd.old_rate = input_repeat_rate;
+    s_sd.old_bright = disp_get_brightness(); s_sd.old_volume = audio_volume;
+    s_sd.old_sounds = audio_system_sounds; s_sd.old_zone = clock_zone();
 
     ui_groupbox(w, 10, 8, 380, 124, "Desktop");
     ui_label(w, 22, 28, 100, 14, "&Colour:");
@@ -135,8 +162,27 @@ void app_settings(const char *arg)
     s_sd.rate->on_action = set_apply;
     ui_label(w, 350, 232, 30, 14, "Fast");
 
-    widget_t *ok = ui_button(w, 228, 260, 78, 24, "OK", set_ok);
-    widget_t *ca = ui_button(w, 312, 260, 78, 24, "Cancel", set_cancel);
+    ui_groupbox(w, 400, 8, 230, 46, "Screen");
+    ui_label(w, 412, 30, 70, 14, "&Brightness:");
+    s_sd.bright = ui_slider(w, 484, 24, 136, 1, 10, (disp_get_brightness() + 5) / 10);
+    s_sd.bright->on_action = set_apply;
+
+    ui_groupbox(w, 400, 60, 230, 72, "Sound");
+    ui_label(w, 412, 82, 70, 14, "&Volume:");
+    s_sd.volume = ui_slider(w, 484, 76, 136, 0, 20, audio_volume / 5);
+    s_sd.volume->on_action = set_apply;
+    s_sd.sounds = ui_checkbox(w, 412, 106, 200, "S&ystem sounds", audio_system_sounds);
+    s_sd.sounds->on_action = set_apply;
+
+    ui_groupbox(w, 400, 138, 230, 116, "Clock");
+    ui_label(w, 412, 158, 100, 14, "Time &zone:");
+    s_sd.zones = ui_listview(w, 412, 174, 206, 70, zones_get);
+    ui_listview_set_count(s_sd.zones, clock_zone_count());
+    ui_listview_select(s_sd.zones, clock_zone());
+    s_sd.zones->on_action = set_apply;
+
+    widget_t *ok = ui_button(w, 468, 260, 78, 24, "OK", set_ok);
+    widget_t *ca = ui_button(w, 552, 260, 78, 24, "Cancel", set_cancel);
     w->def_btn = ok; w->cancel_btn = ca;
     w->on_close = set_close;
     w->on_destroy = set_destroy;
@@ -252,7 +298,7 @@ static void view_paint(widget_t *w, gfx_t *g)
     if (iw < w->r.w || ih < w->r.h) gfx_fill(g, 0, 0, w->r.w, w->r.h, C_DKGREY);
     if (z == 1) { gfx_blit(g, ox, oy, v->w, v->h, v->px, v->w); return; }
     // zoomed: expand one source row at a time, only the rows inside the clip
-    uint8_t line[VGA_W];
+    uint8_t line[SCREEN_W];
     int y_first = (g->cy0 - g->oy - oy) / z, y_last = (g->cy1 - 1 - g->oy - oy) / z;
     int x_first = (g->cx0 - g->ox - ox) / z, x_last = (g->cx1 - 1 - g->ox - ox) / z;
     if (y_first < 0) y_first = 0;
@@ -261,7 +307,7 @@ static void view_paint(widget_t *w, gfx_t *g)
     if (x_last >= v->w) x_last = v->w - 1;
     if (x_last < x_first) return;
     int n = (x_last - x_first + 1) * z;
-    if (n > VGA_W) n = VGA_W;
+    if (n > SCREEN_W) n = SCREEN_W;
     for (int y = y_first; y <= y_last; y++) {
         const uint8_t *s = v->px + y * v->w + x_first;
         for (int i = 0; i < n; i++) line[i] = s[i / z];
@@ -517,7 +563,7 @@ static void term_exec(term_t *t, char *line)
         os_sd_summary(a, sizeof(a));
         term_printf(t, "%s\n", a);
     } else if (!strcmp(c, "ver")) {
-        term_puts(t, OS_NAME " " OS_VERSION " on ESP32-S3\n");
+        term_puts(t, OS_NAME " " OS_VERSION " on " OS_CHIP "\n");
     } else if (!strcmp(c, "uptime")) {
         uint32_t s = os_uptime_ms() / 1000;
         term_printf(t, "%u:%02u:%02u\n", (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));

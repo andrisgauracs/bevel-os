@@ -1,6 +1,6 @@
-// USB host HID input on the native USB pins (GPIO19/20, wired to a USB-C breakout).
-// Report descriptors are parsed, so keyboards, relative mice and absolute pointers (the
-// JetKVM's mouse reports absolute coordinates) all work, with or without report IDs.
+// USB host HID input on the board's high-speed USB-C port (the ESP32-P4's USB 2.0 OTG controller).
+// Report descriptors are parsed, so keyboards, relative mice and absolute pointers (KVMs, tablets)
+// all work, with or without report IDs.
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -9,11 +9,28 @@
 #include "esp_log.h"
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
+#include "soc/usb_dwc_struct.h"
 #include "input.h"
-#include "vga.h"
+#include "display.h"
 #include "os.h"
 
 static const char *TAG = "usb";
+
+// The host port is the ESP32-P4's high-speed controller, but ESP-IDF's host stack has no transaction
+// translator support: a keyboard or mouse (low/full speed) behind a high-speed hub is refused
+// ("Connected device is FS, transaction translator (TT) is not supported"). Keyboards and mice are
+// all this OS uses the port for, so the controller is told to run the port at full speed only
+// (HCFG.FSLSSupp: it then does not answer the high-speed chirp). Hubs come up as USB 1.1 hubs, and
+// everything behind them works. Set to 0 to get high speed back (devices straight on the port only).
+#define USB_FORCE_FULL_SPEED 1
+
+static inline void force_full_speed(void)
+{
+#if USB_FORCE_FULL_SPEED
+    // a port recovery resets the controller and with it this bit, so it is re-applied by the watchdog task
+    if (!USB_DWC_HS.hcfg_reg.fslssupp) USB_DWC_HS.hcfg_reg.fslssupp = 1;
+#endif
+}
 
 enum { F_KEY_MODS, F_KEY_ARRAY, F_BUTTONS, F_X, F_Y, F_WHEEL };
 typedef struct {
@@ -190,12 +207,8 @@ static void handle_report(iface_t *it, const uint8_t *data, size_t len)
             else {
                 int32_t range = f->lmax - f->lmin;
                 if (range <= 0) break;
-                // An absolute pointer covers what the capture device sees. Our line is 640 active
-                // pixels out of 848; a capture expecting standard timing (active = 80% of the
-                // line) sees the picture centred in 678 pixel widths, 19 on each side.
-                int span = f->kind == F_X ? VGA_ABS_SPAN_X : VGA_H;
+                int span = f->kind == F_X ? SCREEN_W : SCREEN_H;
                 int p = (int)(((int64_t)(v - f->lmin) * span) / (range + 1));
-                if (f->kind == F_X) p -= (VGA_ABS_SPAN_X - VGA_W) / 2;
                 if (f->kind == F_X) ax = p; else ay = p;
                 have_abs = true;
             }
@@ -299,6 +312,7 @@ static void usb_lib_task(void *arg)
 {
     const usb_host_config_t cfg = {.skip_phy_setup = false, .intr_flags = ESP_INTR_FLAG_LEVEL1};
     ESP_ERROR_CHECK(usb_host_install(&cfg));
+    force_full_speed();     // before the first bus reset (the connection is debounced for 500 ms)
     xTaskNotifyGive((TaskHandle_t)arg);
     while (1) {
         uint32_t flags;
@@ -326,11 +340,15 @@ static void port_watchdog_task(void *arg)
 {
     int idle_s = 0, period = 4;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        for (int i = 0; i < 10; i++) { vTaskDelay(pdMS_TO_TICKS(100)); force_full_speed(); }
         if (usb_wd_off) continue;
         // "Idle" = no working keyboard or mouse. That covers an empty port, a port stuck after a
         // failed reset, and a device or hub whose enumeration failed (it still counts as attached).
         if ((s_kbd_count + s_mouse_count) > 0 && !usb_force_cycle) { idle_s = 0; period = 4; continue; }
+        // Only an empty port is cycled: with a hub attached, switching the root port off trips an
+        // assertion in ESP-IDF's hub driver.
+        usb_host_lib_info_t info = {0};
+        if (usb_host_lib_info(&info) == ESP_OK && info.num_devices > 0) { idle_s = 0; usb_force_cycle = 0; continue; }
         if (++idle_s < period && !usb_force_cycle) continue;
         idle_s = 0;
         usb_force_cycle = 0;
@@ -339,6 +357,44 @@ static void port_watchdog_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(400));
         usb_host_lib_set_root_port_power(true);
     }
+}
+
+// "usbdev" serial command: every device on the bus, with its interfaces.
+static void list_client_cb(const usb_host_client_event_msg_t *msg, void *arg) { }
+
+void usb_list_devices(void)
+{
+    usb_host_client_handle_t cl;
+    const usb_host_client_config_t ccfg = {.is_synchronous = false, .max_num_event_msg = 4,
+                                           .async = {.client_event_callback = list_client_cb}};
+    if (usb_host_client_register(&ccfg, &cl) != ESP_OK) { serial_printf("usb: no client\n"); return; }
+    uint8_t addrs[16];
+    int n = 0;
+    usb_host_device_addr_list_fill(sizeof(addrs), addrs, &n);
+    serial_printf("usb: %d device(s)\n", n);
+    for (int i = 0; i < n; i++) {
+        usb_device_handle_t dev;
+        if (usb_host_device_open(cl, addrs[i], &dev) != ESP_OK) { serial_printf("  addr %d: cannot open\n", addrs[i]); continue; }
+        usb_device_info_t info;
+        const usb_device_desc_t *dd;
+        const usb_config_desc_t *cd;
+        usb_host_device_info(dev, &info);
+        usb_host_get_device_descriptor(dev, &dd);
+        static const char *const speeds[] = {"low", "full", "high"};
+        serial_printf("  addr %d: %04x:%04x class %02x, %s speed, %d configuration(s)\n", addrs[i], dd->idVendor, dd->idProduct,
+                      dd->bDeviceClass, info.speed < 3 ? speeds[info.speed] : "?", dd->bNumConfigurations);
+        if (usb_host_get_active_config_descriptor(dev, &cd) == ESP_OK) {
+            int off = 0;
+            const usb_standard_desc_t *d = (const usb_standard_desc_t *)cd;
+            while ((d = usb_parse_next_descriptor_of_type(d, cd->wTotalLength, USB_B_DESCRIPTOR_TYPE_INTERFACE, &off)) != NULL) {
+                const usb_intf_desc_t *it = (const usb_intf_desc_t *)d;
+                serial_printf("    interface %d: class %02x subclass %02x protocol %02x\n", it->bInterfaceNumber, it->bInterfaceClass,
+                              it->bInterfaceSubClass, it->bInterfaceProtocol);
+            }
+        }
+        usb_host_device_close(cl, dev);
+    }
+    usb_host_client_deregister(cl);
 }
 
 void usb_input_start(void)

@@ -1,5 +1,6 @@
-// Serial command channel on UART0 (the COM port): framebuffer dumps, input injection, stats and
-// self-tests, so the OS can be driven and checked without anyone at the keyboard.
+// Serial command channel on the board's USB-Serial-JTAG port ("USB1", also the log console and
+// the flashing port): screen dumps, input injection, stats and self-tests, so the OS can be driven
+// and checked without anyone at the keyboard.
 // Commands are text lines; every command ends its output with a line "@@OK" (or "@@ERR ...").
 #include <stdio.h>
 #include <stdarg.h>
@@ -8,11 +9,12 @@
 #include <ctype.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#include "vga.h"
+#include "display.h"
 #include "comp.h"
 #include "input.h"
 #include "os.h"
@@ -20,7 +22,18 @@
 
 static FILE *s_put;   // file being uploaded (putopen / putdata / putclose)
 
-static void out(const char *s) { uart_write_bytes(UART_NUM_0, s, strlen(s)); }
+// Nothing is sent while no computer has the port open, so a missing listener never stalls the OS.
+static void out_bytes(const void *data, int n)
+{
+    const uint8_t *p = data;
+    while (n > 0 && usb_serial_jtag_is_connected()) {
+        int k = usb_serial_jtag_write_bytes(p, n, pdMS_TO_TICKS(200));
+        if (k <= 0) break;
+        p += k; n -= k;
+    }
+}
+
+static void out(const char *s) { out_bytes(s, strlen(s)); }
 
 void serial_printf(const char *fmt, ...)
 {
@@ -30,36 +43,41 @@ void serial_printf(const char *fmt, ...)
     int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
-    uart_write_bytes(UART_NUM_0, buf, n);
+    out_bytes(buf, n);
 }
 
-// Framebuffer as RLE: header "@@FB w h bytes", then (count, value) pairs. Includes the pointer.
+// The screen as the panel shows it (RGB565, overlays and pointer included), run-length encoded:
+// header "@@FB16 w h bytes", then (count, low byte, high byte) triplets.
 static void dump_fb(void *arg)
 {
-    const int len = VGA_W * VGA_H;
-    uint8_t *copy = heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
+    const int len = SCREEN_W * SCREEN_H;
+    bool shown;
+    disp_cursor_get(NULL, NULL, &shown);
+    if (arg && shown) disp_cursor_show(false);
+    uint16_t *copy = heap_caps_malloc(len * 2, MALLOC_CAP_SPIRAM);
+    if (copy) memcpy(copy, disp_panel_fb(), len * 2);
+    if (arg && shown) disp_cursor_show(true);
     if (!copy) { out("@@ERR no memory\n"); return; }
-    memcpy(copy, vga_fb(), len);
-    if (!arg) vga_cursor_overlay(copy);
     size_t total = 0;
     for (int i = 0; i < len;) {
         int run = 1;
         while (i + run < len && run < 255 && copy[i + run] == copy[i]) run++;
-        total += 2;
+        total += 3;
         i += run;
     }
-    serial_printf("\n@@FB %d %d %u\n", VGA_W, VGA_H, (unsigned)total);
-    static uint8_t buf[1024];
+    serial_printf("\n@@FB16 %d %d %u\n", SCREEN_W, SCREEN_H, (unsigned)total);
+    static uint8_t buf[1020];
     int n = 0;
     for (int i = 0; i < len;) {
         int run = 1;
         while (i + run < len && run < 255 && copy[i + run] == copy[i]) run++;
         buf[n++] = (uint8_t)run;
-        buf[n++] = copy[i];
+        buf[n++] = (uint8_t)copy[i];
+        buf[n++] = (uint8_t)(copy[i] >> 8);
         i += run;
-        if (n == sizeof(buf)) { uart_write_bytes(UART_NUM_0, buf, n); n = 0; }
+        if (n == sizeof(buf)) { out_bytes(buf, n); n = 0; }
     }
-    if (n) uart_write_bytes(UART_NUM_0, buf, n);
+    if (n) out_bytes(buf, n);
     out("\n@@END\n");
     free(copy);
 }
@@ -129,17 +147,11 @@ static void settle(void)
 
 static void cmd_stat(void)
 {
-    vga_stats_t v;
     comp_stats_t c;
-    vga_get_stats(&v, true);
     comp_get_stats(&c, true);
-    serial_printf("vga: frames %u fills %u isr_avg %u.%u us isr_max %u us slack_min %d us late %u core %u copy %s\n",
-                  (unsigned)v.frames, (unsigned)v.fills, (unsigned)(v.isr_avg_us10 / 10), (unsigned)(v.isr_avg_us10 % 10),
-                  (unsigned)v.isr_max_us, (int)v.slack_min_us, (unsigned)v.late, (unsigned)v.isr_core,
-                  vga_get_copy_mode() ? "pie" : "memcpy");
-    serial_printf("comp: flushes %u pixels %u render %u us copy %u us wait %u us max_flush %u us\n",
+    serial_printf("comp: flushes %u pixels %u render %u us copy %u us max_flush %u us\n",
                   (unsigned)c.flushes, (unsigned)c.pixels, (unsigned)c.render_us, (unsigned)c.copy_us,
-                  (unsigned)c.wait_us, (unsigned)c.max_flush_us);
+                  (unsigned)c.max_flush_us);
     serial_printf("mem: internal free %u largest %u min %u | psram free %u | uptime %u ms\n",
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -190,14 +202,10 @@ static void handle_line(char *line)
         }
     } else if (!strcmp(line, "wheel")) {
         input_wheel(atoi(arg)); settle();
-    } else if (!strcmp(line, "copy")) {
-        int m = atoi(arg); vga_set_copy_mode(m & 1); comp_copy_mode = m & 1;
-    } else if (!strcmp(line, "race")) {
-        comp_beam_race = atoi(arg);
     } else if (!strcmp(line, "redraw")) {
         ev_call_sync((void (*)(void *))comp_invalidate_all, NULL); settle();
     } else if (!strcmp(line, "reboot")) {
-        out("@@OK\n"); uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100)); esp_restart();
+        out("@@OK\n"); vTaskDelay(pdMS_TO_TICKS(100)); esp_restart();
     } else if (!strcmp(line, "putopen")) {
         if (s_put) fclose(s_put);
         s_put = fopen(arg, "wb");
@@ -224,7 +232,7 @@ static void serial_task(void *unused)
     int n = 0;
     uint8_t c;
     for (;;) {
-        if (uart_read_bytes(UART_NUM_0, &c, 1, portMAX_DELAY) != 1) continue;
+        if (usb_serial_jtag_read_bytes(&c, 1, portMAX_DELAY) != 1) continue;
         if (c == '\r') continue;
         if (c == '\n') {
             line[n] = 0;
@@ -238,6 +246,8 @@ static void serial_task(void *unused)
 
 void serial_start(void)
 {
-    uart_driver_install(UART_NUM_0, 4096, 0, 0, NULL, 0);
+    usb_serial_jtag_driver_config_t cfg = {.tx_buffer_size = 4096, .rx_buffer_size = 8192};
+    usb_serial_jtag_driver_install(&cfg);
+    usb_serial_jtag_vfs_use_driver();   // the log console shares the port through the same driver
     xTaskCreatePinnedToCore(serial_task, "serial", 6144, NULL, 6, NULL, 0);
 }

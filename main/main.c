@@ -12,7 +12,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "os.h"
-#include "vga.h"
+#include "display.h"
 #include "comp.h"
 #include "input.h"
 #include "wm.h"
@@ -20,13 +20,14 @@
 #include "fsutil.h"
 #include "net.h"
 #include "usb/usb_host.h"
-#include "soc/usb_dwc_struct.h"
-#include "soc/gpio_reg.h"
-#include "esp_rom_sys.h"
+#include "audio.h"
+#include "esp_event.h"
+#include "esp_hosted_event.h"
 
 static const char *TAG = "os";
 
 void usb_input_start(void);
+void touch_start(void);
 void settings_load(void);
 void app_loader_start(void);
 
@@ -73,36 +74,22 @@ bool os_serial_command(const char *cmd, char *arg)
         serial_printf("written\n");
         return true;
     }
-    if (!strcmp(cmd, "vstat")) {
-        // display timing only: touches no heap, so it cannot disturb what it measures
-        vga_stats_t v;
-        vga_get_stats(&v, true);
-        serial_printf("vga: fills %u isr_max %u us slack_min %d us late %u\n", (unsigned)v.fills, (unsigned)v.isr_max_us, (int)v.slack_min_us, (unsigned)v.late);
-        return true;
-    }
     if (!strcmp(cmd, "net")) {
         net_status_t st;
         net_status(&st);
-        serial_printf("net: state %d ssid \"%s\" ip %s rssi %d\n", st.state, st.ssid, st.ip, st.rssi);
+        serial_printf("net: eth %s %s | wifi state %d ssid \"%s\" ip %s rssi %d\n", st.eth_link ? "up" : "down", st.eth_ip,
+                      st.state, st.ssid, st.ip, st.rssi);
         return true;
     }
     if (!strcmp(cmd, "browse")) { ev_call((void (*)(void *))app_browser, strdup(arg)); vTaskDelay(pdMS_TO_TICKS(300)); ev_call_sync(NULL, NULL); return true; }
     if (!strcmp(cmd, "usbport")) {
-        usb_dwc_hprt_reg_t h = USB_DWC.hprt_reg;
         usb_host_lib_info_t info = {0};
         usb_host_lib_info(&info);
-        serial_printf("port: power=%d connected=%d enabled=%d D+=%d D-=%d speed=%d devices=%d clients=%d\n", h.prtpwr, h.prtconnsts,
-                      h.prtena, h.prtlnsts & 1, (h.prtlnsts >> 1) & 1, h.prtspd, info.num_devices, info.num_clients);
+        serial_printf("usb: devices=%d clients=%d\n", info.num_devices, info.num_clients);
         return true;
     }
     if (!strcmp(cmd, "usbwd")) { extern volatile int usb_wd_off; usb_wd_off = !atoi(arg); return true; }
-    if (!strcmp(cmd, "usbpins")) {
-        // raw pad levels, independent of the USB controller's own status register
-        int hi19 = 0, hi20 = 0;
-        for (int i = 0; i < 2000; i++) { hi19 += (REG_READ(GPIO_IN_REG) >> 19) & 1; hi20 += (REG_READ(GPIO_IN_REG) >> 20) & 1; esp_rom_delay_us(500); }
-        serial_printf("over 1 s: D- (GPIO19) high %d%%, D+ (GPIO20) high %d%%\n", hi19 / 20, hi20 / 20);
-        return true;
-    }
+    if (!strcmp(cmd, "usbdev")) { extern void usb_list_devices(void); usb_list_devices(); return true; }
     if (!strcmp(cmd, "usbcycle")) { extern volatile int usb_force_cycle; usb_force_cycle = 1; return true; }
     if (!strcmp(cmd, "usbstat")) { extern int usb_keyboards(void), usb_mice(void); serial_printf("keyboards %d mice %d\n", usb_keyboards(), usb_mice()); return true; }
     if (!strcmp(cmd, "usblog")) {
@@ -117,28 +104,24 @@ bool os_serial_command(const char *cmd, char *arg)
     return false;
 }
 
-static void vga_start(void *arg)
-{
-    ESP_ERROR_CHECK(vga_init());
-    if (arg) { xTaskNotifyGive((TaskHandle_t)arg); vTaskDelete(NULL); }
-}
+volatile bool os_c6_link_up;
+static void hosted_up(void *arg, esp_event_base_t base, int32_t id, void *data) { os_c6_link_up = true; }
 
 static void gui_task(void *unused)
 {
-    if (VGA_ISR_CORE == xPortGetCoreID()) vga_start(NULL);
-    else {
-        // the scan-out interrupt lives on whichever core starts the panel
-        xTaskCreatePinnedToCore(vga_start, "vga_init", 4096, xTaskGetCurrentTaskHandle(), 10, NULL, VGA_ISR_CORE);
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    }
+    ESP_ERROR_CHECK(disp_init());
     storage_init();
     settings_load();
+    clock_init();
     wm_init();
     app_loader_start();
+    touch_start();
+    audio_start();
     net_boot();
-    vga_cursor_show(true);
+    disp_cursor_show(true);
     wm_pump(0);
     ESP_LOGI(TAG, "desktop up at %u ms", (unsigned)os_uptime_ms());
+    audio_chime(CHIME_STARTUP);
     wm_run();
 }
 
@@ -146,9 +129,11 @@ void app_main(void)
 {
     esp_chip_info_t chip;
     esp_chip_info(&chip);
-    ESP_LOGI(TAG, OS_NAME " " OS_VERSION ": ESP32-S3 rev v%d.%d, %d cores, PSRAM %u KB, free internal %u KB",
+    ESP_LOGI(TAG, OS_NAME " " OS_VERSION ": " OS_CHIP " rev v%d.%d, %d cores, PSRAM %u KB, free internal %u KB",
              chip.revision / 100, chip.revision % 100, chip.cores, (unsigned)(esp_psram_get_size() >> 10),
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >> 10));
+    esp_event_loop_create_default();
+    esp_event_handler_register(ESP_HOSTED_EVENT, ESP_HOSTED_EVENT_TRANSPORT_UP, hosted_up, NULL);
     input_init();
     serial_start();
     xTaskCreatePinnedToCore(gui_task, "gui", 8192, NULL, 5, NULL, GUI_CORE);

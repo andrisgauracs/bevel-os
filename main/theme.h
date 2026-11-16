@@ -1,6 +1,6 @@
 // The palette, defined once. 64 colours: (B << 4) | (G << 2) | R, each channel 0..3.
 #pragma once
-#include "vga.h"
+#include "display.h"
 
 #define C_BLACK     RGB222(0, 0, 0)
 #define C_WHITE     RGB222(3, 3, 3)

@@ -1,6 +1,4 @@
-// Benchmarks. Every number in docs/PERF.md comes from here ("perf" serial command, or the
-// Benchmark app). Each test also reports the scan-out's worst-case slack while it ran, because a
-// fast primitive that starves the display of PSRAM bandwidth is not a win.
+// Benchmarks ("perf" serial command, or the Benchmark app).
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -10,7 +8,7 @@
 #include "esp_async_memcpy.h"
 #include "esp_attr.h"
 #include "os.h"
-#include "vga.h"
+#include "display.h"
 #include "comp.h"
 #include "wm.h"
 #include "apps.h"
@@ -22,10 +20,7 @@ uint32_t os_uptime_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 static void report(const char *name, uint32_t value, const char *unit)
 {
-    vga_stats_t v;
-    vga_get_stats(&v, true);
-    serial_printf("PERF %-26s %8u %-8s | scanout slack %d us, late %u, isr max %u us\n", name, (unsigned)value, unit,
-                  (int)v.slack_min_us, (unsigned)v.late, (unsigned)v.isr_max_us);
+    serial_printf("PERF %-26s %8u %-8s\n", name, (unsigned)value, unit);
     int i;
     for (i = 0; i < perf_count; i++) if (!strcmp(perf_results[i].name, name)) break;
     if (i == PERF_MAX) return;
@@ -36,7 +31,7 @@ static void report(const char *name, uint32_t value, const char *unit)
 }
 
 static inline int64_t now_us(void) { return esp_timer_get_time(); }
-static void begin(void) { vga_stats_t v; vga_get_stats(&v, true); }
+static void begin(void) { }
 static uint32_t kb_per_s(uint64_t bytes, int64_t us) { return (uint32_t)(bytes * 1000000ull / 1024 / (us ? us : 1)); }
 
 __attribute__((noinline, optimize("no-tree-loop-distribute-patterns")))
@@ -76,9 +71,6 @@ static void bench_mem(void)
     begin(); t = now_us();
     for (int i = 0; i < R; i++) memset(ib, i, INT_N);
     report("fill int memset", kb_per_s((uint64_t)INT_N * R, now_us() - t), "KB/s");
-    begin(); t = now_us();
-    for (int i = 0; i < R; i++) pie_fill16(ib, i, INT_N / 16);
-    report("fill int PIE", kb_per_s((uint64_t)INT_N * R, now_us() - t), "KB/s");
 
     begin(); t = now_us();
     for (int i = 0; i < R / 8; i++) copy_bytes(ib2, ib, INT_N);
@@ -86,30 +78,18 @@ static void bench_mem(void)
     begin(); t = now_us();
     for (int i = 0; i < R; i++) memcpy(ib2, ib, INT_N);
     report("copy int>int memcpy", kb_per_s((uint64_t)INT_N * R, now_us() - t), "KB/s");
-    begin(); t = now_us();
-    for (int i = 0; i < R; i++) pie_copy16(ib2, ib, INT_N / 16);
-    report("copy int>int PIE", kb_per_s((uint64_t)INT_N * R, now_us() - t), "KB/s");
 
     const int E = 8;
     begin(); t = now_us();
     for (int i = 0; i < E; i++) memset(eb, i, EXT_N);
     report("fill PSRAM memset", kb_per_s((uint64_t)EXT_N * E, now_us() - t), "KB/s");
-    begin(); t = now_us();
-    for (int i = 0; i < E; i++) pie_fill16(eb, i, EXT_N / 16);
-    report("fill PSRAM PIE", kb_per_s((uint64_t)EXT_N * E, now_us() - t), "KB/s");
 
     begin(); t = now_us();
     for (int i = 0; i < E; i++) for (int o = 0; o < EXT_N; o += INT_N) memcpy(eb + o, ib, INT_N);
     report("copy int>PSRAM memcpy", kb_per_s((uint64_t)EXT_N * E, now_us() - t), "KB/s");
     begin(); t = now_us();
-    for (int i = 0; i < E; i++) for (int o = 0; o < EXT_N; o += INT_N) pie_copy16(eb + o, ib, INT_N / 16);
-    report("copy int>PSRAM PIE", kb_per_s((uint64_t)EXT_N * E, now_us() - t), "KB/s");
-    begin(); t = now_us();
     for (int i = 0; i < E; i++) for (int o = 0; o < EXT_N; o += INT_N) memcpy(ib, eb + o, INT_N);
     report("copy PSRAM>int memcpy", kb_per_s((uint64_t)EXT_N * E, now_us() - t), "KB/s");
-    begin(); t = now_us();
-    for (int i = 0; i < E; i++) for (int o = 0; o < EXT_N; o += INT_N) pie_copy16(ib, eb + o, INT_N / 16);
-    report("copy PSRAM>int PIE", kb_per_s((uint64_t)EXT_N * E, now_us() - t), "KB/s");
 
     // GDMA copy (the CPU is free while it runs; here we just wait for it)
     async_memcpy_config_t cfg = ASYNC_MEMCPY_DEFAULT_CONFIG();
@@ -185,53 +165,24 @@ static void bench_draw(void)
 static void bench_compose(void)
 {
     const int N = 30;
-    for (int race = 1; race >= 0; race--) {
-        int saved = comp_beam_race;
-        comp_beam_race = race;
-        comp_stats_t c;
-        comp_get_stats(&c, true);
-        begin();
-        int64_t t = now_us();
-        for (int i = 0; i < N; i++) { comp_invalidate_all(); comp_flush(); }
-        int64_t dt = now_us() - t;
-        comp_get_stats(&c, true);
-        comp_beam_race = saved;
-        report(race ? "full redraw (beam-raced)" : "full redraw (no race)", (uint32_t)(N * 10000000ull / dt), "FPS x10");
-        report(race ? "  render per frame" : "  render per frame (nr)", c.render_us / N, "us");
-        report(race ? "  PSRAM copy per frame" : "  PSRAM copy per frame (nr)", c.copy_us / N, "us");
-        if (race) report("  beam wait per frame", c.wait_us / N, "us");
-    }
-    // a window-sized update
     comp_stats_t c;
     comp_get_stats(&c, true);
-    begin();
     int64_t t = now_us();
-    for (int i = 0; i < N * 2; i++) { comp_invalidate(120 + (i & 7) * 8, 90, 320, 240); comp_flush(); }
+    for (int i = 0; i < N; i++) { comp_invalidate_all(); comp_flush(); }
     int64_t dt = now_us() - t;
-    report("redraw 320x240 (raced)", (uint32_t)(N * 2 * 10000000ull / dt), "FPS x10");
-    begin();
+    comp_get_stats(&c, true);
+    report("full redraw", (uint32_t)(N * 10000000ull / dt), "FPS x10");
+    report("  render per frame", c.render_us / N, "us");
+    report("  convert per frame", c.copy_us / N, "us");
+    // a window-sized update
+    t = now_us();
+    for (int i = 0; i < N * 2; i++) { comp_invalidate(120 + (i & 7) * 8, 90, 320, 240); comp_flush(); }
+    dt = now_us() - t;
+    report("redraw 320x240", (uint32_t)(N * 2 * 10000000ull / dt), "FPS x10");
     t = now_us();
     for (int i = 0; i < 2000; i++) { comp_invalidate(300 + (i & 63), 200, 16, 16); comp_flush(); }
     dt = now_us() - t;
-    report("redraw 16x16 (raced)", (uint32_t)(2000 * 1000000ull / dt), "upd/s");
-}
-
-static void bench_scanout(void)
-{
-    for (int mode = 0; mode <= 1; mode++) {
-        int saved = vga_get_copy_mode();
-        vga_set_copy_mode(mode);
-        vga_stats_t v;
-        vTaskDelay(pdMS_TO_TICKS(50));
-        vga_get_stats(&v, true);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        vga_get_stats(&v, false);
-        vga_set_copy_mode(saved);
-        report(mode ? "scanout fill PIE (avg)" : "scanout fill memcpy (avg)", v.isr_avg_us10, "us x10");
-        // share of one core spent feeding the display
-        report(mode ? "scanout CPU load PIE" : "scanout CPU load memcpy",
-               (uint32_t)((uint64_t)v.isr_avg_us10 * v.fills / 10 / 5000), "% x10");
-    }
+    report("redraw 16x16", (uint32_t)(2000 * 1000000ull / dt), "upd/s");
 }
 
 // Drag a real window (Help: a 488x357 list full of text) around the desktop, one step per frame.
@@ -259,21 +210,8 @@ static void bench_drag(void)
     comp_get_stats(&c, true);
     report("window drag 488x357", (uint32_t)(N * 10000000ull / dt), "FPS x10");
     report("  drag: render per frame", c.render_us / N, "us");
-    report("  drag: PSRAM copy / frame", c.copy_us / N, "us");
-    report("  drag: beam wait / frame", c.wait_us / N, "us");
+    report("  drag: convert per frame", c.copy_us / N, "us");
     report("  drag: pixels per frame", c.pixels / N, "px");
-    // the same without waiting for the beam: what the hardware could do if tearing were allowed
-    comp_beam_race = 0;
-    begin();
-    t = now_us();
-    for (int i = 0; i < N; i++) {
-        x += path[i & 15][0]; y += path[i & 15][1];
-        wm_move(w, x, y);
-        comp_flush();
-    }
-    dt = now_us() - t;
-    comp_beam_race = 1;
-    report("window drag, no beam race", (uint32_t)(N * 10000000ull / dt), "FPS x10");
     wm_destroy(w);
     wm_pump(0);
 }
@@ -281,7 +219,6 @@ static void bench_drag(void)
 void perf_run(const char *which)
 {
     bool all = !which || !*which || !strcmp(which, "all");
-    if (all || !strcmp(which, "scanout")) bench_scanout();
     if (all || !strcmp(which, "mem")) bench_mem();
     if (all || !strcmp(which, "draw")) bench_draw();
     if (all || !strcmp(which, "compose")) bench_compose();

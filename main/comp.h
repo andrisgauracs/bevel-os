@@ -1,4 +1,4 @@
-// Compositor: dirty-rectangle tracking, strip rendering in internal RAM, beam-raced flush to PSRAM.
+// Compositor: dirty-rectangle tracking, strip rendering in internal RAM, one hand-over to the display.
 #pragma once
 #include "gfx.h"
 
@@ -15,14 +15,9 @@ int comp_flush(void);
 
 typedef struct {
     uint32_t flushes;     // comp_flush() calls that did work
-    uint32_t pixels;      // pixels written to PSRAM
+    uint32_t pixels;      // pixels sent to the display
     uint32_t render_us;   // time spent painting strips (internal RAM)
-    uint32_t copy_us;     // time spent copying strips to PSRAM
-    uint32_t wait_us;     // time spent waiting for the beam
+    uint32_t copy_us;     // time spent copying and converting strips for the panel
     uint32_t max_flush_us;// longest single comp_flush()
 } comp_stats_t;
 void comp_get_stats(comp_stats_t *out, bool reset);
-
-// Tuning knobs for benchmarks.
-extern int comp_beam_race;   // 1 = wait for the scan-out (tear-free), 0 = write immediately
-extern int comp_copy_mode;   // 0 = memcpy, 1 = PIE

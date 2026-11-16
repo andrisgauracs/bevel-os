@@ -52,6 +52,8 @@ int fs_list(const char *dir, fs_entry_t **out)
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        // the folder the SD card is mounted on only shows while a card is in the slot
+        if (!storage_sd_ok() && !strcmp(dir, DISK_ROOT) && !strcmp(de->d_name, "SD")) continue;
         if (n == cap) {
             cap = cap ? cap * 2 : 32;
             fs_entry_t *nl = os_grow(list, n * sizeof(fs_entry_t), cap * sizeof(fs_entry_t));
@@ -170,6 +172,7 @@ const char *fs_type_name(const fs_entry_t *e)
     if (ext_in(x, "txt md log ini cfg csv")) return "Text";
     if (ext_in(x, "c h py sh json")) return "Source text";
     if (ext_in(x, "bmp")) return "Picture";
+    if (ext_in(x, "wav")) return "Sound";
     if (ext_in(x, "elf app")) return "Program";
     return "File";
 }
@@ -188,6 +191,7 @@ void os_open_file(window_t *owner, const char *path)
 {
     const char *x = fs_ext(path);
     if (ext_in(x, "bmp")) app_viewer(path);
+    else if (ext_in(x, "wav")) app_player(path);
     else if (ext_in(x, "elf app")) os_run_elf(path);
     else if (ext_in(x, "txt md log ini cfg csv c h py sh json")) app_editor(path);
     else if (msgbox(owner, "Open", "Bevel OS does not know this kind of file.\nOpen it in the text editor?", MB_ASK, MB_YESNO) == ID_YES) app_editor(path);
@@ -213,11 +217,12 @@ static void files_get(widget_t *lv, int i, lv_item_t *it)
     files_t *f = lv->win->user;
     static char size[24];
     fs_entry_t *e = &f->ents[i];
+    bool card = e->is_dir && !strcmp(f->dir, DISK_ROOT) && !strcmp(e->name, "SD");
     it->text = e->name;
-    it->icon = fs_type_icon(e);
+    it->icon = card ? &icon16_drive : fs_type_icon(e);
     if (e->is_dir) size[0] = 0; else os_fmt_size(size, sizeof(size), e->size);
     it->col[0] = size;
-    it->col[1] = fs_type_name(e);
+    it->col[1] = card ? "SD card" : fs_type_name(e);
 }
 
 static void files_load(files_t *f, const char *select)
@@ -240,7 +245,7 @@ static void files_load(files_t *f, const char *select)
     wm_set_title(f->win, title);
     uint64_t total = 0, fr = 0;
     char a[20] = "?", b[20] = "?", st[96];
-    if (storage_df(&total, &fr)) { os_fmt_size(a, sizeof(a), fr); os_fmt_size(b, sizeof(b), total); }
+    if (storage_df_path(f->dir, &total, &fr)) { os_fmt_size(a, sizeof(a), fr); os_fmt_size(b, sizeof(b), total); }
     snprintf(st, sizeof(st), "%d item%s      %s free of %s", f->n, f->n == 1 ? "" : "s", a, b);
     ui_set_text(f->status, st);
 }
@@ -361,11 +366,31 @@ static void files_paste(files_t *f)
     }
     wm_busy(true);
     bool ok;
-    if (s_fclip_cut) { ok = rename(s_fclip, dst) == 0; if (ok) s_fclip[0] = 0; }
+    if (s_fclip_cut) {
+        ok = rename(s_fclip, dst) == 0;
+        if (!ok) ok = fs_copy(s_fclip, dst) && fs_delete(s_fclip);   // between the drive and the SD card
+        if (ok) s_fclip[0] = 0;
+    }
     else ok = fs_copy(s_fclip, dst);
     wm_busy(false);
     if (!ok) msgbox(f->win, "Paste", "Could not finish. The drive may be full.", MB_ERROR, MB_OK);
     files_load(f, name);
+}
+
+static void files_command(window_t *w, int cmd);
+
+// The SD card came or went: every open Files window lists its folder again.
+void files_refresh_all(void)
+{
+    for (window_t *w = wm_top(); w; w = w->prev) {
+        if (w->on_command != files_command || (w->flags & WIN_DEAD)) continue;
+        files_t *f = w->user;
+        fs_entry_t *e = files_sel(f);
+        char keep[68] = "";
+        if (e) strlcpy(keep, e->name, sizeof(keep));
+        if (!fs_is_dir(f->dir)) strcpy(f->dir, DISK_ROOT);
+        files_load(f, keep);
+    }
 }
 
 static void files_command(window_t *w, int cmd)

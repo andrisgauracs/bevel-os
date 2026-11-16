@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include "wm.h"
 #include "comp.h"
-#include "vga.h"
+#include "display.h"
 #include "os.h"
 #include "esp_heap_caps.h"
 
@@ -402,13 +402,13 @@ window_t *wm_create(const char *title, int cw, int ch, uint16_t flags)
     w->r.w = cw + 2 * BORDER_W;
     w->r.h = ch + top_h(w) + BORDER_W;
     if (flags & WIN_DIALOG) {
-        w->r.x = (VGA_W - w->r.w) / 2;
+        w->r.x = (SCREEN_W - w->r.w) / 2;
         w->r.y = (DESK_H - w->r.h) / 2;
     } else {
         w->r.x = 30 + (cascade % 6) * 22;
         w->r.y = 16 + (cascade % 6) * 22;
         cascade++;
-        if (w->r.x + w->r.w > VGA_W) w->r.x = VGA_W - w->r.w;
+        if (w->r.x + w->r.w > SCREEN_W) w->r.x = SCREEN_W - w->r.w;
         if (w->r.y + w->r.h > DESK_H) w->r.y = DESK_H - w->r.h;
     }
     if (w->r.x < 0) w->r.x = 0;
@@ -515,8 +515,8 @@ static void set_frame(window_t *w, int x, int y, int fw, int fh)
 {
     if (fw < w->min_w) fw = w->min_w;
     if (fh < w->min_h) fh = w->min_h;
-    if (fw > VGA_W + 2 * BORDER_W) fw = VGA_W + 2 * BORDER_W;
-    if (fh > VGA_H) fh = VGA_H;
+    if (fw > SCREEN_W + 2 * BORDER_W) fw = SCREEN_W + 2 * BORDER_W;
+    if (fh > SCREEN_H) fh = SCREEN_H;
     if (x == w->r.x && y == w->r.y && fw == w->r.w && fh == w->r.h) return;
     bool resized = fw != w->r.w || fh != w->r.h;
     rect_t old = w->r, u;
@@ -533,7 +533,7 @@ static void set_frame(window_t *w, int x, int y, int fw, int fh)
 void wm_move(window_t *w, int x, int y)
 {
     // keep a grabbable part of the title bar on screen
-    if (x > VGA_W - 40) x = VGA_W - 40;
+    if (x > SCREEN_W - 40) x = SCREEN_W - 40;
     if (x < 40 - w->r.w) x = 40 - w->r.w;
     if (y < 0) y = 0;
     if (y > DESK_H - TITLE_H - BORDER_W) y = DESK_H - TITLE_H - BORDER_W;
@@ -557,7 +557,7 @@ void wm_maximize(window_t *w, bool on)
     if (on && !(w->flags & WIN_MAXIMIZED)) {
         w->restore = w->r;
         w->flags |= WIN_MAXIMIZED;
-        set_frame(w, -BORDER_W, -BORDER_W, VGA_W + 2 * BORDER_W, DESK_H + 2 * BORDER_W);
+        set_frame(w, -BORDER_W, -BORDER_W, SCREEN_W + 2 * BORDER_W, DESK_H + 2 * BORDER_W);
     } else if (!on && (w->flags & WIN_MAXIMIZED)) {
         w->flags &= ~WIN_MAXIMIZED;
         set_frame(w, w->restore.x, w->restore.y, w->restore.w, w->restore.h);
@@ -750,7 +750,7 @@ void wm_set_cursor(const bitmap_t *c)
     if (s_busy) c = &cursor_busy;
     if (c == s_cursor) return;
     s_cursor = c;
-    vga_cursor_shape(c->px, c->w, c->h, c->hot_x, c->hot_y);
+    disp_cursor_shape(c->px, c->w, c->h, c->hot_x, c->hot_y);
 }
 
 void wm_busy(bool on)
@@ -813,7 +813,8 @@ static void handle_mouse(int type, int x, int y, int btn)
         s_alt_clean = false;
         uint32_t now = os_uptime_ms();
         int dx = x - s_last_down_x, dy = y - s_last_down_y;
-        if (btn == s_last_down_btn && now - s_last_down_ms < 450 && dx > -5 && dx < 5 && dy > -5 && dy < 5 && s_last_clicks == 1) clicks = 2;
+        int tol = input_touching() ? 24 : 5;   // two taps of a finger never land on the same pixels
+        if (btn == s_last_down_btn && now - s_last_down_ms < (input_touching() ? 600 : 450) && dx > -tol && dx < tol && dy > -tol && dy < tol && s_last_clicks == 1) clicks = 2;
         s_last_down_ms = now; s_last_down_x = x; s_last_down_y = y; s_last_down_btn = btn; s_last_clicks = clicks;
     }
 
@@ -989,7 +990,7 @@ void wm_init(void)
     wm_set_cursor(&cursor_arrow);
     int x, y;
     input_mouse_pos(&x, &y);
-    vga_cursor_move(x, y);
+    disp_cursor_move(x, y);
     shell_init();
     comp_invalidate_all();
 }

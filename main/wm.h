@@ -16,7 +16,7 @@ typedef struct widget widget_t;
 #define MENUBAR_H   19
 #define BORDER_W    4       // outer frame thickness
 #define SCROLL_W    16
-#define DESK_H      (VGA_H - TASKBAR_H)
+#define DESK_H      (SCREEN_H - TASKBAR_H)
 
 // ------------------------------------------------------------------ menus
 #define MI_DISABLED 1

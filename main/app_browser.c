@@ -865,11 +865,11 @@ static void load_task(void *arg)
 {
     load_t *l = arg;
     browser_t *b = s_br;
-    // wait a little for Wi-Fi if it is still connecting (just after power-on)
+    // wait a little for the network if it is still connecting (just after power-on)
     for (int i = 0; i < 80; i++) {
         net_status_t st;
         net_status(&st);
-        if (st.state != NET_CONNECTING || (b && b->cancel)) break;
+        if (net_online() || (st.state != NET_CONNECTING && !st.eth_link) || (b && b->cancel)) break;
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     l->status = net_fetch(l->url, &l->body, &l->len, l->ctype, sizeof(l->ctype), l->final_url, sizeof(l->final_url), MAX_PAGE,
@@ -923,7 +923,7 @@ static void br_go(browser_t *b, const char *url_in, bool push)
         if (!l) return;
         net_status_t st;
         net_status(&st);
-        if (st.state == NET_OFF || st.state == NET_IDLE || st.state == NET_FAILED) {
+        if (!net_online() && !st.eth_link && (st.state == NET_OFF || st.state == NET_IDLE || st.state == NET_FAILED)) {
             free(l);
             br_error_page(b, net_error_text(-1));
         } else {

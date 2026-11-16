@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "wm.h"
+#include "audio.h"
 
 static void end_btn(widget_t *w, int code) { wm_end_modal(w->win, w->id); }
 
@@ -53,8 +54,9 @@ int msgbox(window_t *owner, const char *title, const char *text, int icon, int b
     if (owner) { d->r.x = owner->r.x + (owner->r.w - d->r.w) / 2; d->r.y = owner->r.y + (owner->r.h - d->r.h) / 2; }
     if (d->r.x < 0) d->r.x = 0;
     if (d->r.y < 0) d->r.y = 0;
-    if (d->r.x + d->r.w > VGA_W) d->r.x = VGA_W - d->r.w;
+    if (d->r.x + d->r.w > SCREEN_W) d->r.x = SCREEN_W - d->r.w;
     if (d->r.y + d->r.h > DESK_H) d->r.y = DESK_H - d->r.h;
+    audio_chime((icon & 3) == MB_ERROR || (icon & 3) == MB_WARN ? CHIME_ERROR : CHIME_INFO);
     ui_icon(d, 14, 14, icons[icon & 3]);
     ui_label(d, 60, 14 + (th < 36 ? (36 - th) / 2 : 0), tw + 4, th, wrapped);
     free(wrapped);

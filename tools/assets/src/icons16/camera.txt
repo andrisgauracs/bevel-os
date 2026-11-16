@@ -1,0 +1,27 @@
+; Bevel OS camera - photo camera
+size 16 16
+color K 0 0 0
+color G 2 2 2
+color D 1 1 1
+color W 3 3 3
+color B 0 0 2
+color S 1 2 3
+color Y 3 3 0
+color R 3 0 0
+---
+................
+................
+................
+.....KKKK.......
+.KKKKKKKKKKKKKK.
+.KWWWWWKKKWWWWK.
+.KGRGGKKBKKGYGK.
+.KGGGKKWBBKKGGK.
+.KGGGKBBSBBKGGK.
+.KGGGKKBBBKKGGK.
+.KGGGGKKBKKGGGK.
+.KDDDDDKKKDDDDK.
+.KKKKKKKKKKKKKK.
+................
+................
+................

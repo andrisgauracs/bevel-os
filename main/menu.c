@@ -98,9 +98,9 @@ static void open_level(const menu_item_t *items, int x, int y, bool above, int a
     w += 6;
     l->n = n;
     if (above) y -= h;
-    if (x + w > VGA_W) x = alt_x >= 0 ? alt_x - w : VGA_W - w;
+    if (x + w > SCREEN_W) x = alt_x >= 0 ? alt_x - w : SCREEN_W - w;
     if (x < 0) x = 0;
-    if (y + h > VGA_H) y = VGA_H - h;
+    if (y + h > SCREEN_H) y = SCREEN_H - h;
     if (y < 0) y = 0;
     l->r = rect_make(x, y, w, h);
     s_depth++;

@@ -1,22 +1,26 @@
 // Doom on Bevel OS: the platform layer for doomgeneric (https://github.com/ozkl/doomgeneric, GPL-2).
-// The engine renders 320x200 in 256 colours. We show it at 640x400 in the 64-colour RGB222
-// palette, using the four screen pixels of every game pixel for a 2x2 ordered dither, which
-// gives five shades between each pair of real colour levels at no loss of resolution.
+// The engine renders 320x200 in 256 colours. It is shown at 640x400 in the window's true-colour
+// layer (RGB565), so the game's own palette is used as it is. Sound effects go to the OS mixer;
+// there is no music (that would need a MIDI synthesiser).
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include "../bevel.h"
 #include "doomgeneric.h"
 #include "doomkeys.h"
+#include "doomtype.h"
+#include "i_sound.h"
+#include "w_wad.h"
+#include "z_zone.h"
 
 struct color { uint32_t b:8; uint32_t g:8; uint32_t r:8; uint32_t a:8; };
 extern struct color colors[256];
 extern int palette_changed;   // boolean in the engine
 
 static const bevel_api_t *os;
-static uint8_t *s_canvas;
+static uint16_t *s_px;
 static int s_cw, s_ch;
-static uint16_t s_lut_top[256], s_lut_bot[256];   // two dithered screen pixels per game pixel, per row
+static uint16_t s_lut[256];
 
 #define KQ 64
 static struct { uint8_t pressed, key; } s_keys[KQ];
@@ -24,49 +28,96 @@ static int s_kr, s_kw;
 
 void bevel_exit(void);
 
-static uint8_t quant(int r, int g, int b, int pos)
-{
-    static const int off[4] = {-32, 11, 32, -11};   // 2x2 Bayer thresholds, in units of 1/255
-    int c[3] = {r, g, b};
-    uint8_t p = 0;
-    for (int k = 0; k < 3; k++) {
-        int v = c[k] + off[pos];
-        int q = (v + 42) / 85;
-        if (v < 0) q = 0;
-        if (q > 3) q = 3;
-        p |= q << (k * 2);
-    }
-    return p;
-}
-
-static void build_lut(void)
-{
-    for (int i = 0; i < 256; i++) {
-        int r = colors[i].r, g = colors[i].g, b = colors[i].b;
-        s_lut_top[i] = quant(r, g, b, 0) | quant(r, g, b, 1) << 8;
-        s_lut_bot[i] = quant(r, g, b, 2) | quant(r, g, b, 3) << 8;
-    }
-}
-
 void DG_Init(void)
 {
     if (os->win_open("Doom", 640, 400) != 0) bevel_exit();
-    s_canvas = os->canvas(&s_cw, &s_ch);
-    if (!s_canvas || s_cw < 640 || s_ch < 400) bevel_exit();
+    s_px = os->canvas16(&s_cw, &s_ch);
+    if (!s_px || s_cw < 640 || s_ch < 400) bevel_exit();
 }
 
 void DG_DrawFrame(void)
 {
-    if (palette_changed) { build_lut(); palette_changed = 0; }
-    const uint8_t *src = (const uint8_t *)DG_ScreenBuffer;
-    uint16_t top[320], bot[320];
-    for (int y = 0; y < 200; y++, src += 320) {
-        for (int x = 0; x < 320; x++) { uint8_t i = src[x]; top[x] = s_lut_top[i]; bot[x] = s_lut_bot[i]; }
-        memcpy(s_canvas + (y * 2) * s_cw, top, 640);
-        memcpy(s_canvas + (y * 2 + 1) * s_cw, bot, 640);
+    if (palette_changed) {
+        for (int i = 0; i < 256; i++) s_lut[i] = BV_RGB565(colors[i].r, colors[i].g, colors[i].b);
+        palette_changed = 0;
     }
-    os->flush();
+    const uint8_t *src = (const uint8_t *)DG_ScreenBuffer;
+    for (int y = 0; y < 200; y++, src += 320) {
+        uint16_t *d = s_px + (y * 2) * s_cw;
+        for (int x = 0; x < 320; x++) { uint16_t c = s_lut[src[x]]; d[x * 2] = c; d[x * 2 + 1] = c; }
+        memcpy(d + s_cw, d, 640 * sizeof(uint16_t));
+    }
+    os->flush16();
 }
+
+// ---------------------------------------------------------------- sound effects
+// The engine's sound module interface, on top of the OS mixer's one-shot voices. A sound lump is
+// 8-bit unsigned mono at its own rate (11025 Hz mostly): the mixer plays it straight from the
+// engine's lump cache.
+
+#define SND_CHANNELS 16
+static int s_voice[SND_CHANNELS];
+static boolean s_sfx_prefix;
+
+int use_libsamplerate = 0;          // configuration variables the engine binds when sound is built in
+float libsamplerate_scale = 0.65f;
+
+static boolean snd_init(boolean use_sfx_prefix) { s_sfx_prefix = use_sfx_prefix; return true; }
+static void snd_shutdown(void) { for (int i = 0; i < SND_CHANNELS; i++) os->snd_stop(s_voice[i]); }
+
+static int snd_lump(sfxinfo_t *sfx)
+{
+    char name[12];
+    if (sfx->link) sfx = sfx->link;
+    snprintf(name, sizeof(name), "%s%s", s_sfx_prefix ? "ds" : "", sfx->name);
+    return W_GetNumForName(name);
+}
+
+static void snd_update(void) { }
+
+// vol 0..127, sep 0 (left)..254 (right)
+static void snd_params(int channel, int vol, int sep)
+{
+    if (channel >= 0 && channel < SND_CHANNELS) os->snd_set(s_voice[channel], vol * 2, sep);
+}
+
+static int snd_start(sfxinfo_t *sfx, int channel, int vol, int sep)
+{
+    if (channel < 0 || channel >= SND_CHANNELS) return -1;
+    os->snd_stop(s_voice[channel]);
+    int lump = sfx->lumpnum;
+    int len = W_LumpLength(lump);
+    const uint8_t *d = W_CacheLumpNum(lump, PU_STATIC);     // stays in the cache: the mixer reads it while it plays
+    if (len < 8 + 32 + 1 || d[0] != 3 || d[1] != 0) return -1;
+    int rate = d[2] | d[3] << 8;
+    int n = d[4] | d[5] << 8 | d[6] << 16 | d[7] << 24;
+    if (n > len - 8) n = len - 8;
+    if (n <= 32) return -1;
+    // the first and last 16 samples are padding
+    s_voice[channel] = os->snd_play(d + 8 + 16, n - 32, rate, BV_SND_U8_MONO, vol * 2, sep);
+    return s_voice[channel] ? channel : -1;
+}
+
+static void snd_stop(int channel) { if (channel >= 0 && channel < SND_CHANNELS) { os->snd_stop(s_voice[channel]); s_voice[channel] = 0; } }
+static boolean snd_playing(int channel) { return channel >= 0 && channel < SND_CHANNELS && os->snd_playing(s_voice[channel]); }
+
+static snddevice_t s_snd_devices[] = {SNDDEVICE_SB, SNDDEVICE_PAS, SNDDEVICE_GUS, SNDDEVICE_WAVEBLASTER, SNDDEVICE_SOUNDCANVAS, SNDDEVICE_AWE32};
+sound_module_t DG_sound_module = {
+    s_snd_devices, sizeof(s_snd_devices) / sizeof(s_snd_devices[0]),
+    snd_init, snd_shutdown, snd_lump, snd_update, snd_params, snd_start, snd_stop, snd_playing, NULL,
+};
+
+// no music
+static boolean mus_init(void) { return false; }
+static void mus_void(void) { }
+static void mus_volume(int v) { }
+static void *mus_register(void *data, int len) { return NULL; }
+static void mus_unregister(void *h) { }
+static void mus_play(void *h, boolean looping) { }
+static boolean mus_playing(void) { return false; }
+music_module_t DG_music_module = {
+    NULL, 0, mus_init, mus_void, mus_volume, mus_void, mus_void, mus_register, mus_unregister, mus_play, mus_void, mus_playing, NULL,
+};
 
 void DG_SleepMs(uint32_t ms) { os->sleep_ms(ms); }
 uint32_t DG_GetTicksMs(void) { return os->ticks_ms(); }
@@ -131,13 +182,18 @@ void bevel_exit(void) { exit(0); }
 int app_main(const bevel_api_t *api, const char *arg)
 {
     os = api;
-    static char *argv[] = {"doom", "-iwad", "/disk/Apps/doom1.wad", "-mb", "4", NULL};
-    FILE *f = fopen(argv[2], "rb");
-    if (!f) {
-        os->msgbox("Doom", "The game data file doom1.wad is missing from the Apps folder.", BV_MB_OK);
+    if (os->version < 2) { os->msgbox("Doom", "This build of Doom needs a newer Bevel OS.", BV_MB_OK); return 1; }
+    // the game data: on the drive, or on the SD card
+    static const char *const places[] = {"/disk/Apps/doom1.wad", "/disk/SD/doom1.wad", "/disk/SD/Apps/doom1.wad", "/disk/SD/DOOM1.WAD"};
+    static char *argv[] = {"doom", "-iwad", NULL, "-mb", "8", NULL};
+    for (int i = 0; i < 4 && !argv[2]; i++) {
+        FILE *f = fopen(places[i], "rb");
+        if (f) { fclose(f); argv[2] = (char *)places[i]; }
+    }
+    if (!argv[2]) {
+        os->msgbox("Doom", "The game data file doom1.wad is missing. Put it in the Apps folder of the drive, or on the SD card.", BV_MB_OK);
         return 1;
     }
-    fclose(f);
     doomgeneric_Create(5, argv);
     for (;;) doomgeneric_Tick();
 }

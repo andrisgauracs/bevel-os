@@ -41,3 +41,5 @@ void app_settings(const char *arg);
 void app_viewer(const char *arg);
 void app_browser(const char *arg);
 void app_network(const char *arg);
+void app_player(const char *arg);
+void app_camera(const char *arg);
