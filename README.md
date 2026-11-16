@@ -281,18 +281,71 @@ server listens on 127.0.0.1:5900 and the serial channel on 127.0.0.1:47812, so e
 ### QEMU
 
 The real firmware, Xtensa apps and all, in Espressif's QEMU (`machine esp32s3`). QEMU emulates
-neither the LCD peripheral nor USB nor the Wi-Fi radio, so `sdkconfig.qemu` builds it headless,
-with VNC over the emulated OpenCores Ethernet, without USB input and without the PIE vector
-instructions.
+neither the LCD peripheral nor USB nor the Wi-Fi radio, so `sdkconfig.qemu` builds it headless
+(no VGA), with VNC over the emulated OpenCores Ethernet, without USB input, without the PIE vector
+instructions and with the flash in DIO mode.
+
+**Setup (once).** ESP-IDF v5.5.3 (see [Building and flashing](#building-and-flashing)), then QEMU:
 
 ```sh
-python $IDF_PATH/tools/idf_tools.py install qemu-xtensa    # once
-tools/qemu.sh                          # builds build-qemu/ and boots it; --wipe for a blank drive
-gvncviewer 127.0.0.1:0                 # or any viewer on 127.0.0.1:5900
-BV_PORT=tcp:127.0.0.1:5555 python3 tools/bv.py daemon &   # serial channel
+python $IDF_PATH/tools/idf_tools.py install qemu-xtensa
 ```
 
-The drive is kept between runs in `build-qemu/qemu_flash.bin`.
+QEMU needs `libslirp` for its network. If the system does not have it (`libslirp0` on
+Debian/Ubuntu) and there is no root access, unpack it where `tools/qemu.sh` looks for it:
+
+```sh
+mkdir -p ~/esp/qemu-libs && cd ~/esp/qemu-libs
+apt-get download libslirp0 && dpkg-deb -x libslirp0_*.deb root
+```
+
+**1. Start Bevel OS in QEMU** (from the repository):
+
+```sh
+tools/qemu.sh
+```
+
+It builds the firmware into `build-qemu/` with `sdkconfig.defaults` + `sdkconfig.qemu`, writes a
+flash image and boots it. When it prints
+
+```
+Bevel OS in QEMU: VNC 127.0.0.1:5900, serial channel tcp:127.0.0.1:5555 (Ctrl+C to stop)
+```
+
+the desktop is up a few seconds later (about ten more on the very first run, while the bundled
+files are written to the blank drive).
+
+| Option | Effect |
+|---|---|
+| `--no-build` | boot the last build without rebuilding |
+| `--wipe` | start from a blank drive |
+| `--vnc-port P` | forward the VNC server to another host port (if 5900 is taken) |
+| `--serial-port P` | serial channel on another host port (default 5555) |
+
+**2. Connect with a VNC viewer** (another terminal):
+
+```sh
+gvncviewer 127.0.0.1:0                 # display :0 = port 5900
+vncviewer 127.0.0.1:5900               # TigerVNC; Remmina and others work the same way
+```
+
+There is no password in the QEMU profile (set `CONFIG_BEVEL_VNC_PASSWORD` in `sdkconfig.qemu`
+for one). The viewer's keyboard and mouse drive the OS. Both ports are forwarded on 127.0.0.1
+only.
+
+**3. Stop** with Ctrl+C in the QEMU terminal. The drive is kept between runs in
+`build-qemu/qemu_flash.bin`.
+
+**Serial channel (optional)**, for screenshots, commands, tests and copying files:
+
+```sh
+BV_PORT=tcp:127.0.0.1:5555 python3 tools/bv.py daemon &
+python3 tools/bv.py cmd vnc                                   # VNC server state
+python3 tools/bv.py dump screen.png                           # pixel-exact screenshot
+python3 tools/bv.py put third_party/wad/doom1.wad /disk/Apps/doom1.wad   # for Doom (slow: ~10 min)
+```
+
+The emulator runs slower than the board; the scan-out and benchmark figures mean nothing there.
 
 ### Tests
 
