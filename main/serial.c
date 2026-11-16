@@ -12,11 +12,20 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 #include "vga.h"
 #include "comp.h"
 #include "input.h"
 #include "os.h"
 #include "mbedtls/base64.h"
+
+#if CONFIG_BEVEL_NET_OPENETH
+// QEMU hands over input as fast as the host sends it, not at the line rate: room for a whole
+// command line (putdata is 4.1 KB) so none of it is dropped while the command task is busy.
+#define SERIAL_RX_BYTES 16384
+#else
+#define SERIAL_RX_BYTES 4096
+#endif
 
 static FILE *s_put;   // file being uploaded (putopen / putdata / putclose)
 
@@ -207,6 +216,21 @@ static void handle_line(char *line)
         size_t n = 0;
         ok = s_put && mbedtls_base64_decode(bin, sizeof(bin), &n, (const unsigned char *)arg, strlen(arg)) == 0 &&
              fwrite(bin, 1, n, s_put) == n;
+    } else if (!strcmp(line, "putat")) {
+        // putat <offset> <base64>: idempotent (a repeated line writes the same bytes again), and
+        // acknowledged with its offset and checksum, so a sender can retry over an unreliable
+        // link (QEMU's emulated UART drops or repeats input under load)
+        static uint8_t bin[3200];
+        size_t n = 0;
+        char *sp = strchr(arg, ' ');
+        long off = atol(arg);
+        ok = s_put && sp && mbedtls_base64_decode(bin, sizeof(bin), &n, (const unsigned char *)sp + 1, strlen(sp + 1)) == 0 &&
+             fseek(s_put, off, SEEK_SET) == 0 && fwrite(bin, 1, n, s_put) == n;
+        if (ok) {
+            uint32_t s1 = 1, s2 = 0;   // Adler-32 of the bytes written, checked by the sender
+            for (size_t i = 0; i < n; i++) { s1 = (s1 + bin[i]) % 65521; s2 = (s2 + s1) % 65521; }
+            serial_printf("@@AT %ld %u\n", off, (unsigned)((s2 << 16) | s1));
+        }
     } else if (!strcmp(line, "putclose")) {
         ok = s_put && fclose(s_put) == 0;
         s_put = NULL;
@@ -238,6 +262,6 @@ static void serial_task(void *unused)
 
 void serial_start(void)
 {
-    uart_driver_install(UART_NUM_0, 4096, 0, 0, NULL, 0);
+    uart_driver_install(UART_NUM_0, SERIAL_RX_BYTES, 0, 0, NULL, 0);
     xTaskCreatePinnedToCore(serial_task, "serial", 6144, NULL, 6, NULL, 0);
 }

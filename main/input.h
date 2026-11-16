@@ -61,6 +61,11 @@ void input_mouse_abs(int x, int y);               // screen pixels
 void input_mouse_buttons(uint8_t mask);           // BTN_* bitmask, full state
 void input_wheel(int delta);
 void input_release_all(void);                     // device unplugged
+// Sources that know the character typed rather than the physical key (VNC viewers, the
+// simulator's window): presses the US-layout key for c with Shift set as c needs it, whatever
+// Shift state the source reports. Returns the usage to release later with input_key(u, false),
+// or 0 if c cannot be typed.
+uint8_t input_char_down(char c);
 
 // State
 void input_mouse_pos(int *x, int *y);

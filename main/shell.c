@@ -284,6 +284,7 @@ static void halt_screen(void)
     gfx_bitmap(&g, (VGA_W - 32) / 2, 180, &icon32_logo);
     gfx_text(&g, (VGA_W - gfx_text_w(m1, -1, FONT_UI_BOLD)) / 2, 226, m1, -1, FONT_UI_BOLD, C_ORANGE);
     gfx_text(&g, (VGA_W - gfx_text_w(m2, -1, FONT_UI)) / 2, 246, m2, -1, FONT_UI, C_GREY);
+    display_damage(0, 0, VGA_W, VGA_H);
 }
 
 static void sd_btn(widget_t *w, int code) { wm_end_modal(w->win, w->id); }

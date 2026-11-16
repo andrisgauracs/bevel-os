@@ -1,6 +1,8 @@
 // USB host HID input on the native USB pins (GPIO19/20, wired to a USB-C breakout).
 // Report descriptors are parsed, so keyboards, relative mice and absolute pointers (the
 // JetKVM's mouse reports absolute coordinates) all work, with or without report IDs.
+#include "sdkconfig.h"
+#if CONFIG_BEVEL_USB_INPUT
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -358,3 +360,4 @@ void usb_input_start(void)
     xTaskCreatePinnedToCore(hid_task, "hid", 4096, NULL, 8, NULL, SYS_CORE);
     xTaskCreatePinnedToCore(port_watchdog_task, "usb_wd", 3072, NULL, 4, NULL, SYS_CORE);
 }
+#endif // CONFIG_BEVEL_USB_INPUT

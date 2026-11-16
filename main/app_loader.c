@@ -1,4 +1,6 @@
-// Loadable apps: ELF files from the drive, run with Espressif's elf_loader.
+// Loadable apps: ELF files from the drive. Loading the image and catching its faults is the
+// platform's job (app_elf.c: Espressif's elf_loader and the Xtensa exception table; host/: dlopen
+// and signals); everything else here is shared.
 //
 // Each app runs in its own task on the system core and talks to the OS only through the
 // function table in apps/bevel.h. It draws into a private canvas (PSRAM) that the compositor
@@ -14,22 +16,20 @@
 #include "esp_heap_caps.h"
 #include "esp_random.h"
 #include "esp_log.h"
-#include "esp_elf.h"
-#include "private/elf_symbol.h"
 #include <stdarg.h>
 #include <ctype.h>
 #include <errno.h>
 #include <sys/stat.h>
+#if !BEVEL_HOST
 #include <sys/reent.h>
-#include "esp_ipc.h"
-#include "xtensa_api.h"
-#include "xtensa_context.h"
+#endif
 #include "wm.h"
 #include "apps.h"
 #include "os.h"
 #include "fsutil.h"
 #include "comp.h"
 #include "../apps/bevel.h"
+#include "app_plat.h"
 
 #define MAX_APPS 4
 #define MAX_APP_FILES 8
@@ -42,7 +42,7 @@ typedef struct {
     int id;
     char name[40], path[300];
     TaskHandle_t task;
-    esp_elf_t elf;
+    void *image;          // platform handle of the loaded program
     window_t *win;
     widget_t *canvas_w;
     uint8_t *canvas;
@@ -464,10 +464,12 @@ static const struct { const char *name; void *fn; } s_overrides[] = {
     {"strlen", strlen}, {"strcmp", strcmp}, {"strncmp", strncmp}, {"strcasecmp", strcasecmp}, {"strncasecmp", strncasecmp},
     {"strchr", strchr}, {"strrchr", strrchr}, {"strncpy", strncpy}, {"strcpy", strcpy}, {"strcat", strcat}, {"strstr", strstr},
     {"atoi", atoi}, {"snprintf", snprintf}, {"vsnprintf", vsnprintf}, {"sscanf", sscanf}, {"abs", abs},
+#if !BEVEL_HOST   // newlib internals (the simulator's apps use the host C library for these)
     {"__errno", __errno}, {"__getreent", __getreent}, {"_ctype_", (void *)_ctype_},
+#endif
 };
 
-static uintptr_t app_resolver(const char *name)
+uintptr_t app_libc_symbol(const char *name)
 {
     for (int i = 0; i < (int)(sizeof(s_overrides) / sizeof(s_overrides[0])); i++) {
         if (!strcmp(name, s_overrides[i].name)) return (uintptr_t)s_overrides[i].fn;
@@ -499,7 +501,7 @@ static void app_release(app_t *a)
     a->mem = NULL;
     free(a->canvas);
     a->canvas = NULL;
-    esp_elf_deinit(&a->elf);
+    if (a->image) { app_plat_unload(a->image); a->image = NULL; }
     if (a->q) { vQueueDelete(a->q); a->q = NULL; }
     a->used = false;
 }
@@ -515,9 +517,8 @@ static void gui_app_exited(void *arg)
 static void app_task(void *arg)
 {
     app_t *a = arg;
-    char *argv[2] = {(char *)&s_api, a->path};
     a->last_poll_ms = os_uptime_ms();
-    esp_elf_request(&a->elf, 0, APP_MAGIC, argv);
+    app_plat_run(a->image, &s_api, a->path);
     ev_call(gui_app_exited, a);
     vTaskDelete(NULL);
 }
@@ -541,38 +542,26 @@ static void gui_app_crashed(void *arg)
 }
 
 // The faulting app task resumes here instead of at the bad instruction.
-static void app_crash_landing(void)
+void app_crash_landing(void)
 {
     app_t *a = cur_app();
     if (a) { a->crashed = true; ev_call(gui_app_crashed, a); }
     for (;;) vTaskSuspend(NULL);
 }
 
-static void app_exception(XtExcFrame *frame)
+bool app_fault(uint32_t cause, uint32_t pc, uint32_t addr)
 {
-    extern void xt_unhandled_exception(XtExcFrame *frame);
-    app_t *a = xPortInIsrContext() ? NULL : cur_app();
-    if (!a || a->crashed || a->in_api) { xt_unhandled_exception(frame); return; }
-    a->crash_cause = frame->exccause;
-    a->crash_pc = frame->pc;
-    a->crash_addr = frame->excvaddr;
-    frame->pc = (uint32_t)app_crash_landing;
-    frame->ps &= ~(3u << 16);       // CALLINC = 0, so the landing function's ENTRY does not rotate the window
-    frame->lcount = 0;
-}
-
-static void install_handlers(void *arg)
-{
-    // the exception table is per core
-    static const int causes[] = {0, 2, 3, 6, 9, 20, 28, 29};
-    for (int i = 0; i < (int)(sizeof(causes) / sizeof(causes[0])); i++) xt_set_exception_handler(causes[i], app_exception);
+    app_t *a = cur_app();
+    if (!a || a->crashed || a->in_api) return false;   // a fault in the OS itself: let it crash
+    a->crash_cause = cause;
+    a->crash_pc = pc;
+    a->crash_addr = addr;
+    return true;
 }
 
 void app_loader_init(void)
 {
-    install_handlers(NULL);
-    elf_set_symbol_resolver(app_resolver);
-    esp_ipc_call_blocking(1 - xPortGetCoreID(), install_handlers, NULL);
+    app_plat_init();
 }
 
 void os_run_elf(const char *path)
@@ -595,9 +584,8 @@ void os_run_elf(const char *path)
     memset(a, 0, sizeof(*a));
     if (!img) err = "The program file could not be read.";
     else if (len < 52 || memcmp(img, "\x7f" "ELF", 4)) err = "This file is not a program for Bevel OS.";
-    else {
-        esp_elf_init(&a->elf);
-        if (esp_elf_relocate(&a->elf, (const uint8_t *)img, len) != 0) { esp_elf_deinit(&a->elf); err = "The program could not be loaded (it may be damaged or built for another system)."; }
+    else if (!(a->image = app_plat_load(path, (const uint8_t *)img, len))) {
+        err = "The program could not be loaded (it may be damaged or built for another system).";
     }
     free(img);
     wm_busy(false);

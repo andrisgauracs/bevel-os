@@ -14,6 +14,14 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "sdkconfig.h"
+#ifndef CONFIG_BEVEL_NET_OPENETH
+#define CONFIG_BEVEL_NET_OPENETH 0
+#endif
+#if CONFIG_BEVEL_NET_OPENETH
+#include "esp_eth.h"
+#include "esp_eth_mac_openeth.h"
+#endif
 #include "net.h"
 #include "os.h"
 #include "fsutil.h"
@@ -32,7 +40,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_ip[0] = 0;
         if (s_want && s_retries++ < 6) { s_state = NET_CONNECTING; esp_wifi_connect(); }
         else s_state = s_want ? NET_FAILED : NET_IDLE;
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+    } else if (base == IP_EVENT && (id == IP_EVENT_STA_GOT_IP || id == IP_EVENT_ETH_GOT_IP)) {
         ip_event_got_ip_t *e = data;
         snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&e->ip_info.ip));
         s_retries = 0;
@@ -40,9 +48,38 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
+#if CONFIG_BEVEL_NET_OPENETH
+// Under QEMU: the emulated OpenCores Ethernet controller instead of the radio. The "network" is
+// QEMU's user-mode NAT, which hands out an address by DHCP.
+static bool eth_start(void)
+{
+    if (esp_netif_init() != ESP_OK) return false;
+    esp_event_loop_create_default();
+    esp_netif_config_t ncfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *netif = esp_netif_new(&ncfg);
+    eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
+    eth_phy_config_t phy_cfg = ETH_PHY_DEFAULT_CONFIG();
+    phy_cfg.autonego_timeout_ms = 100;
+    esp_eth_mac_t *mac = esp_eth_mac_new_openeth(&mac_cfg);
+    esp_eth_phy_t *phy = esp_eth_phy_new_dp83848(&phy_cfg);
+    esp_eth_config_t cfg = ETH_DEFAULT_CONFIG(mac, phy);
+    esp_eth_handle_t eth = NULL;
+    if (!mac || !phy || esp_eth_driver_install(&cfg, &eth) != ESP_OK) return false;
+    esp_netif_attach(netif, esp_eth_new_netif_glue(eth));
+    esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, on_event, NULL);
+    strlcpy(s_ssid, "Ethernet (emulator)", sizeof(s_ssid));
+    s_state = NET_CONNECTING;
+    s_started = true;
+    return esp_eth_start(eth) == ESP_OK;
+}
+#endif
+
 bool net_start(void)
 {
     if (s_started) return true;
+#if CONFIG_BEVEL_NET_OPENETH
+    return eth_start();
+#endif
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) { nvs_flash_erase(); err = nvs_flash_init(); }
     if (err != ESP_OK) return false;
@@ -67,11 +104,12 @@ void net_status(net_status_t *o)
     o->state = s_state;
     strlcpy(o->ssid, s_ssid, sizeof(o->ssid));
     strlcpy(o->ip, s_ip, sizeof(o->ip));
-    if (s_state == NET_CONNECTED) { wifi_ap_record_t ap; if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) o->rssi = ap.rssi; }
+    if (s_state == NET_CONNECTED && !CONFIG_BEVEL_NET_OPENETH) { wifi_ap_record_t ap; if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) o->rssi = ap.rssi; }
 }
 
 int net_scan(net_ap_t *out, int max)
 {
+    if (CONFIG_BEVEL_NET_OPENETH) return 0;
     if (!net_start()) return -1;
     if (s_state == NET_CONNECTING) return 0;
     if (esp_wifi_scan_start(NULL, true) != ESP_OK) return 0;
@@ -96,7 +134,7 @@ int net_scan(net_ap_t *out, int max)
 
 void net_connect(const char *ssid, const char *password, bool save)
 {
-    if (!net_start()) return;
+    if (!net_start() || CONFIG_BEVEL_NET_OPENETH) return;
     s_want = false;
     esp_wifi_disconnect();
     wifi_config_t wc = {0};
@@ -121,6 +159,7 @@ void net_connect(const char *ssid, const char *password, bool save)
 
 void net_disconnect(bool forget)
 {
+    if (CONFIG_BEVEL_NET_OPENETH) return;
     s_want = false;
     if (s_started) esp_wifi_disconnect();
     s_state = s_started ? NET_IDLE : NET_OFF;
@@ -131,7 +170,15 @@ void net_disconnect(bool forget)
 static void boot_task(void *arg)
 {
     int n;
+#if CONFIG_BEVEL_NET_OPENETH
+    net_start();
+    vTaskDelete(NULL);
+#endif
     char *s = fs_read_all(WIFI_FILE, &n);
+    if (!s && CONFIG_BEVEL_WIFI_SSID[0]) {
+        // nothing saved from the Network panel: the network chosen at build time (headless boards)
+        net_connect(CONFIG_BEVEL_WIFI_SSID, CONFIG_BEVEL_WIFI_PASSWORD, false);
+    }
     if (s) {
         char *nl = strchr(s, '\n');
         if (nl) {
@@ -151,7 +198,7 @@ void net_boot(void)
     static bool tried;
     if (tried || s_state != NET_OFF) return;
     tried = true;
-    if (fs_exists(WIFI_FILE)) xTaskCreatePinnedToCore(boot_task, "net_boot", 4096, NULL, 2, NULL, SYS_CORE);
+    if (fs_exists(WIFI_FILE) || CONFIG_BEVEL_WIFI_SSID[0] || CONFIG_BEVEL_NET_OPENETH) xTaskCreatePinnedToCore(boot_task, "net_boot", 4096, NULL, 2, NULL, SYS_CORE);
 }
 
 // ---------------------------------------------------------------- HTTP

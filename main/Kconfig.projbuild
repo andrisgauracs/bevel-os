@@ -1,0 +1,72 @@
+menu "Bevel OS"
+
+    choice BEVEL_DISPLAY
+        prompt "Local display"
+        default BEVEL_DISPLAY_VGA
+        help
+            Where the desktop is shown. "None" keeps the framebuffer in PSRAM but never starts the
+            LCD peripheral: the VGA pins stay free and the scan-out costs nothing. Use it with the
+            VNC server, or under QEMU.
+
+        config BEVEL_DISPLAY_VGA
+            bool "VGA 640x480 (resistor DAC)"
+        config BEVEL_DISPLAY_NONE
+            bool "None (headless)"
+    endchoice
+
+    config BEVEL_VNC
+        bool "VNC server (remote desktop)"
+        default n
+        help
+            Serve the desktop over the network with the RFB protocol (any VNC viewer: TigerVNC,
+            RealVNC, Remmina, noVNC through websockify...). Keyboard and mouse from the viewer are
+            injected like USB input. Works with or without the VGA output.
+
+    config BEVEL_VNC_PORT
+        int "VNC TCP port"
+        depends on BEVEL_VNC
+        default 5900
+
+    config BEVEL_VNC_PASSWORD
+        string "VNC password"
+        depends on BEVEL_VNC
+        default ""
+        help
+            Password asked by the viewer (classic VNC authentication, at most 8 characters are
+            used). Empty means no authentication at all: only do that on a trusted network.
+            VNC authentication is weak in any case (DES challenge, no encryption): never expose
+            the port to the Internet.
+
+    config BEVEL_WIFI_SSID
+        string "Default Wi-Fi network"
+        default ""
+        help
+            Joined at boot when no network was saved from the Network panel (/System/wifi.ini).
+            Useful to reach a headless board over VNC on first boot.
+
+    config BEVEL_WIFI_PASSWORD
+        string "Default Wi-Fi password"
+        default ""
+
+    config BEVEL_NET_OPENETH
+        bool "Use the emulated Ethernet (QEMU) instead of Wi-Fi"
+        default n
+        help
+            QEMU does not emulate the Wi-Fi radio. With this option the network comes up on the
+            OpenCores Ethernet controller that QEMU provides (DHCP from QEMU's user network).
+            Requires CONFIG_ETH_USE_OPENETH. Only for the emulator.
+
+    config BEVEL_USB_INPUT
+        bool "USB host keyboard and mouse"
+        default y
+        help
+            Disable under QEMU, which does not emulate the USB OTG controller.
+
+    config BEVEL_PIE
+        bool "Use the PIE (SIMD) copy and fill kernels"
+        default y
+        help
+            128-bit vector instructions of the ESP32-S3. Disable to use plain memcpy/memset, for
+            example under an emulator that does not implement them.
+
+endmenu

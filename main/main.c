@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_chip_info.h"
@@ -19,10 +20,13 @@
 #include "apps.h"
 #include "fsutil.h"
 #include "net.h"
+#include "vnc.h"
+#if CONFIG_BEVEL_USB_INPUT
 #include "usb/usb_host.h"
 #include "soc/usb_dwc_struct.h"
 #include "soc/gpio_reg.h"
 #include "esp_rom_sys.h"
+#endif
 
 static const char *TAG = "os";
 
@@ -45,6 +49,7 @@ static void dump_windows(void *arg)
 }
 
 static void launch_cmd(void *arg) { app_launch_name(arg, NULL); }
+static void run_cmd(void *arg) { os_run_elf(arg); free(arg); }
 
 bool os_serial_command(const char *cmd, char *arg)
 {
@@ -87,6 +92,8 @@ bool os_serial_command(const char *cmd, char *arg)
         return true;
     }
     if (!strcmp(cmd, "browse")) { ev_call((void (*)(void *))app_browser, strdup(arg)); vTaskDelay(pdMS_TO_TICKS(300)); ev_call_sync(NULL, NULL); return true; }
+    if (!strcmp(cmd, "vnc")) { char st[96]; vnc_status(st, sizeof(st)); serial_printf("%s\n", st); return true; }
+#if CONFIG_BEVEL_USB_INPUT
     if (!strcmp(cmd, "usbport")) {
         usb_dwc_hprt_reg_t h = USB_DWC.hprt_reg;
         usb_host_lib_info_t info = {0};
@@ -111,8 +118,24 @@ bool os_serial_command(const char *cmd, char *arg)
         return true;
     }
     if (!strcmp(cmd, "usbdbg")) { extern bool usb_debug; usb_debug = atoi(arg); return true; }
+#endif
+    if (!strcmp(cmd, "sum")) {
+        // Adler-32 of a file, to check an upload end to end
+        FILE *f = fopen(arg, "rb");
+        if (!f) { serial_printf("-1\n"); return true; }
+        static uint8_t buf[4096];
+        uint32_t s1 = 1, s2 = 0;
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+            for (size_t i = 0; i < n; i++) { s1 = (s1 + buf[i]) % 65521; s2 = (s2 + s1) % 65521; }
+        fclose(f);
+        serial_printf("%u\n", (unsigned)((s2 << 16) | s1));
+        return true;
+    }
+    if (!strcmp(cmd, "size")) { struct stat st; serial_printf("%ld\n", stat(arg, &st) == 0 ? (long)st.st_size : -1L); return true; }
     if (!strcmp(cmd, "exists")) { serial_printf("%s\n", fs_is_dir(arg) ? "dir" : fs_exists(arg) ? "file" : "none"); return true; }
     if (!strcmp(cmd, "rm")) { serial_printf("%s\n", fs_delete(arg) ? "deleted" : "failed"); return true; }
+    if (!strcmp(cmd, "run")) { ev_call(run_cmd, strdup(arg)); vTaskDelay(pdMS_TO_TICKS(300)); ev_call_sync(NULL, NULL); return true; }
     if (!strcmp(cmd, "launch")) { ev_call(launch_cmd, arg); vTaskDelay(pdMS_TO_TICKS(150)); ev_call_sync(NULL, NULL); return true; }
     return false;
 }
@@ -136,6 +159,7 @@ static void gui_task(void *unused)
     wm_init();
     app_loader_start();
     net_boot();
+    vnc_start();
     vga_cursor_show(true);
     wm_pump(0);
     ESP_LOGI(TAG, "desktop up at %u ms", (unsigned)os_uptime_ms());
@@ -152,5 +176,7 @@ void app_main(void)
     input_init();
     serial_start();
     xTaskCreatePinnedToCore(gui_task, "gui", 8192, NULL, 5, NULL, GUI_CORE);
+#if CONFIG_BEVEL_USB_INPUT
     usb_input_start();
+#endif
 }

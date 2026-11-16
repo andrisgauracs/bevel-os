@@ -179,6 +179,29 @@ void input_release_all(void)
     if (s_buttons) input_mouse_buttons(0);
 }
 
+uint8_t input_char_down(char c)
+{
+    uint8_t u;
+    bool need_shift;
+    if (!input_char_to_usage(c, &u, &need_shift)) return 0;
+    if (s_caps && u >= K_A && u <= K_Z) need_shift = !need_shift;   // Caps Lock inverts letters
+    bool l = s_keys_down[K_LSHIFT >> 3] & (1 << (K_LSHIFT & 7));
+    bool r = s_keys_down[K_RSHIFT >> 3] & (1 << (K_RSHIFT & 7));
+    bool held = l || r;
+    if (need_shift && !held) {
+        input_key(K_LSHIFT, true); input_key(u, true); input_key(K_LSHIFT, false);
+    } else if (!need_shift && held) {
+        if (l) input_key(K_LSHIFT, false);
+        if (r) input_key(K_RSHIFT, false);
+        input_key(u, true);
+        if (l) input_key(K_LSHIFT, true);
+        if (r) input_key(K_RSHIFT, true);
+    } else {
+        input_key(u, true);
+    }
+    return u;
+}
+
 // ---------------------------------------------------------------- mouse
 
 static void post_move(void)

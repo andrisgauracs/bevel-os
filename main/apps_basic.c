@@ -7,6 +7,7 @@
 #include "os.h"
 #include "vga.h"
 #include "comp.h"
+#include "vnc.h"
 #include "esp_heap_caps.h"
 #include "esp_chip_info.h"
 #include "esp_psram.h"
@@ -42,11 +43,16 @@ static void sys_paint(widget_t *w, gfx_t *g)
         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024), (unsigned)(esp_psram_get_size() / 1024));
     labels[n] = "Flash:"; snprintf(vals[n++], 64, "%u MB", (unsigned)(flash >> 20));
     labels[n] = "Drive:"; os_sd_summary(vals[n++], 64);
-    labels[n] = "Display:"; snprintf(vals[n++], 64, "640 x 480, 64 colours, 60 Hz VGA");
+    labels[n] = "Display:"; snprintf(vals[n++], 64, "%s", vga_name());
     labels[n] = "Uptime:"; snprintf(vals[n++], 64, "%u:%02u:%02u", (unsigned)(up / 3600), (unsigned)(up / 60 % 60), (unsigned)(up % 60));
     labels[n] = "Screen updates:"; snprintf(vals[n++], 64, "%u per second", (unsigned)wm_fps());
+#if CONFIG_BEVEL_DISPLAY_VGA
     labels[n] = "Scan-out:"; snprintf(vals[n++], 64, "%u.%u us per fill, slack %d us, %u late",
         (unsigned)(s_sys_vga.isr_avg_us10 / 10), (unsigned)(s_sys_vga.isr_avg_us10 % 10), (int)s_sys_vga.slack_min_us, (unsigned)s_sys_vga.late);
+#endif
+#if CONFIG_BEVEL_VNC
+    labels[n] = "Remote:"; vnc_status(vals[n], 64); memmove(vals[n], vals[n] + 5, strlen(vals[n] + 5) + 1); n++;
+#endif
     for (int i = 0; i < n; i++, y += 16) {
         gfx_text(g, 4, y, labels[i], -1, FONT_UI, C_TEXT);
         gfx_text(g, 124, y, vals[i], -1, FONT_UI, C_NAVY);
