@@ -16,6 +16,8 @@ localhost.
 import glob, os, sys, socket, struct, threading, time, zlib
 
 # Serial port of the board's COM (UART) USB port: set BV_PORT, or the first USB serial device is used.
+# BV_PORT=tcp:HOST:PORT talks to the desktop simulator (host/, port 47812) or to QEMU
+# (tools/qemu.sh, port 5555) instead; "reset" then sends the reboot command.
 PORT = os.environ.get("BV_PORT") or next(iter(sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))), "/dev/ttyUSB0")
 BAUD = int(os.environ.get("BV_BAUD", "2000000"))
 ADDR = ("127.0.0.1", 47811)
@@ -24,12 +26,55 @@ LOG = os.path.join(ROOT, "build", "serial.log")
 ENDS = (b"@@OK", b"@@ERR", b"@@END")
 
 
+class TcpSerial:
+    """The part of pyserial's Serial the daemon uses, over a TCP connection (reconnects)."""
+    def __init__(self, url):
+        host, port = url[4:].rsplit(":", 1)
+        self.addr = (host, int(port)); self.sock = None; self._rts = False
+
+    def _conn(self):
+        while self.sock is None:
+            try:
+                self.sock = socket.create_connection(self.addr, timeout=2); self.sock.settimeout(None)
+            except OSError:
+                time.sleep(0.5)
+        return self.sock
+
+    def read(self, n):
+        # blocking socket, polled: a send to a slow emulator must be able to wait
+        import select
+        try:
+            s = self._conn()
+            if not select.select([s], [], [], 0.02)[0]:
+                return b""
+            d = s.recv(n)
+            if not d: self.sock = None
+            return d
+        except OSError:
+            self.sock = None; return b""
+
+    def write(self, data):
+        try: self._conn().sendall(data)
+        except OSError: self.sock = None
+
+    @property
+    def rts(self): return self._rts
+
+    @rts.setter
+    def rts(self, v):
+        if v and not self._rts: self.write(b"reboot\n")
+        self._rts = v
+
+
 def daemon():
-    import serial
-    s = serial.Serial()
-    s.port = PORT; s.baudrate = BAUD; s.timeout = 0.02
-    s.dtr = False; s.rts = False
-    s.open()
+    if PORT.startswith("tcp:"):
+        s = TcpSerial(PORT)
+    else:
+        import serial
+        s = serial.Serial()
+        s.port = PORT; s.baudrate = BAUD; s.timeout = 0.02
+        s.dtr = False; s.rts = False
+        s.open()
     lock = threading.Lock()
     listeners = []
     logf = open(LOG, "ab", buffering=0)
@@ -157,10 +202,22 @@ if __name__ == "__main__":
         if b"@@OK" not in request("putopen " + a[2], 10): sys.exit("cannot create " + a[2])
         t0 = time.time()
         for i in range(0, len(data), 3072):
-            if b"@@OK" not in request("putdata " + base64.b64encode(data[i:i + 3072]).decode(), 20): sys.exit("write failed at %d" % i)
+            # each chunk names its offset, so it can be sent again until it is acknowledged
+            chunk = data[i:i + 3072]
+            line = "putat %d %s" % (i, base64.b64encode(chunk).decode())
+            ack = ("@@AT %d %d\n" % (i, zlib.adler32(chunk))).encode()
+            for attempt in range(8):
+                if ack in request(line, 8): break
+                print("(retry at %d)" % i, end=" ", flush=True)
+            else:
+                sys.exit("write failed at %d" % i)
             if (i // 3072) % 100 == 0: print("%d%%" % (i * 100 // len(data)), end=" ", flush=True)
         if b"@@OK" not in request("putclose", 20): sys.exit("close failed")
-        print("\nsent %d bytes in %.0f s" % (len(data), time.time() - t0))
+        size = request("size " + a[2], 10).decode(errors="replace")
+        if str(len(data)) not in size.split(): sys.exit("\nsize check failed: %s" % size.strip())
+        total = request("sum " + a[2], 120).decode(errors="replace")
+        if str(zlib.adler32(data)) not in total.split(): sys.exit("\ncontent check failed: %s" % total.strip())
+        print("\nsent %d bytes in %.0f s, size and checksum verified" % (len(data), time.time() - t0))
     elif a[0] == "reset":
         sys.stdout.write(request("~reset", float(a[1]) if len(a) > 1 else 4).decode(errors="replace"))
     elif a[0] == "listen":

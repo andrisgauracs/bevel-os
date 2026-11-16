@@ -1,8 +1,16 @@
-// VGA scan-out: 640x480@60, RGB222, one byte per pixel, framebuffer in PSRAM.
+// Display interface: one 640x480 RGB222 framebuffer (one byte per pixel, in PSRAM) and a mouse
+// pointer sprite kept outside of it.
+//
+// Backends (CONFIG_BEVEL_DISPLAY_*):
+//   vga.c       the VGA scan-out through the LCD peripheral (beam racing, hardware-style sprite)
+//   headless.c  no local screen: the framebuffer only, for the VNC server, QEMU and the
+//               desktop simulator (host/), which presents it in an SDL window
+// Remote viewers (vnc.c) learn about changes through display_damage().
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "sdkconfig.h"
 
 #define VGA_W 640
 #define VGA_H 480
@@ -22,6 +30,23 @@ void vga_cursor_move(int x, int y);
 void vga_cursor_show(bool on);
 void vga_cursor_get(int *x, int *y, bool *shown);
 void vga_cursor_overlay(uint8_t *dst_fb_copy); // draw the cursor into a copy of the frame (for dumps)
+// Pointer image for remote viewers: copies the sprite (CUR_MAX_W x CUR_MAX_H max, 0xFF =
+// transparent) and returns a counter that changes whenever the shape changes.
+#define VGA_CUR_MAX_W 16
+#define VGA_CUR_MAX_H 20
+uint32_t vga_cursor_image(uint8_t *px, int *w, int *h, int *hot_x, int *hot_y);
+
+// Name of the local display backend, for System Information.
+const char *vga_name(void);
+
+// Pixels in [x, x+w) x [y, y+h) of the framebuffer changed. The compositor calls this after each
+// flush; anything else that writes the framebuffer directly must call it too.
+#if CONFIG_BEVEL_VNC
+void vnc_damage(int x, int y, int w, int h);
+static inline void display_damage(int x, int y, int w, int h) { vnc_damage(x, y, w, h); }
+#else
+static inline void display_damage(int x, int y, int w, int h) { (void)x; (void)y; (void)w; (void)h; }
+#endif
 
 // Beam racing: block until rows [y0,y1) can be rewritten without the scan-out reading them
 // half-way, assuming the write takes est_us. Returns the time waited in microseconds.

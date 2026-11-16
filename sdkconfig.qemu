@@ -1,0 +1,12 @@
+# Overlay for running Bevel OS in QEMU (tools/qemu.sh builds with sdkconfig.defaults + this file).
+# QEMU emulates neither the LCD peripheral nor USB OTG nor the Wi-Fi radio: the desktop is
+# headless and served over VNC through the emulated OpenCores Ethernet.
+CONFIG_BEVEL_DISPLAY_NONE=y
+CONFIG_BEVEL_VNC=y
+CONFIG_BEVEL_NET_OPENETH=y
+CONFIG_ETH_USE_OPENETH=y
+CONFIG_BEVEL_USB_INPUT=n
+# QEMU does not implement the PIE vector instructions
+CONFIG_BEVEL_PIE=n
+# the emulated flash chip is driven in dual I/O
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y

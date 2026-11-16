@@ -7,6 +7,7 @@
 // rewriting rows that are about to be fetched (tear-free without a second framebuffer).
 #include <string.h>
 #include "vga.h"
+#include "cursor_priv.h"
 #include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_heap_caps.h"
@@ -50,19 +51,29 @@ static const char *TAG = "vga";
 #define BB_CYCLES ((uint32_t)((uint64_t)H_TOTAL * BB_LINES * CPU_HZ / PCLK_HZ))
 #define LINE_CYCLES (BB_CYCLES / BB_LINES)
 
+#if CONFIG_BEVEL_PIE
 void pie_copy16_isr(void *dst, const void *src, int blocks);
+#else
+#define pie_copy16_isr(d, s, n) memcpy((d), (s), (size_t)(n) << 4)
+#endif
 
 static esp_lcd_panel_handle_t s_panel;
 static uint8_t *s_fb;
+#if CONFIG_BEVEL_PIE
 static int s_copy_mode = 1;
+#else
+static int s_copy_mode = 0;
+#endif
 
-// --- cursor sprite (read by the ISR) ---
-#define CUR_MAX_W 16
-#define CUR_MAX_H 20
-static DRAM_ATTR uint8_t s_cur_px[CUR_MAX_W * CUR_MAX_H];
-static DRAM_ATTR volatile int16_t s_cur_x, s_cur_y;     // top-left of the sprite on screen
-static DRAM_ATTR volatile int8_t s_cur_w, s_cur_h, s_cur_hx, s_cur_hy;
-static DRAM_ATTR volatile bool s_cur_on;
+// The pointer sprite lives in cursor.c (shared with the headless backend); the ISR reads it.
+#define s_cur_px  vga_cur_px
+#define s_cur_x   vga_cur_x
+#define s_cur_y   vga_cur_y
+#define s_cur_w   vga_cur_w
+#define s_cur_h   vga_cur_h
+#define s_cur_on  vga_cur_on
+#define CUR_MAX_W VGA_CUR_MAX_W
+#define CUR_MAX_H VGA_CUR_MAX_H
 
 // --- beam state (written by the ISR) ---
 static DRAM_ATTR volatile int32_t s_fetch_row;      // first row of the next fetch (or the one in progress)
@@ -190,47 +201,7 @@ esp_err_t vga_init(void)
 }
 
 uint8_t *vga_fb(void) { return s_fb; }
-
-void vga_cursor_shape(const uint8_t *px, int w, int h, int hot_x, int hot_y)
-{
-    if (w > CUR_MAX_W) w = CUR_MAX_W;
-    if (h > CUR_MAX_H) h = CUR_MAX_H;
-    int px_x = s_cur_x + s_cur_hx, px_y = s_cur_y + s_cur_hy; // pointer position stays put
-    bool was = s_cur_on;
-    s_cur_on = false;
-    memset(s_cur_px, 0xFF, sizeof(s_cur_px));
-    for (int y = 0; y < h; y++) memcpy(s_cur_px + y * CUR_MAX_W, px + y * w, w);
-    s_cur_w = w; s_cur_h = h; s_cur_hx = hot_x; s_cur_hy = hot_y;
-    s_cur_x = px_x - hot_x; s_cur_y = px_y - hot_y;
-    s_cur_on = was;
-}
-
-void vga_cursor_move(int x, int y)
-{
-    s_cur_x = x - s_cur_hx;
-    s_cur_y = y - s_cur_hy;
-}
-
-void vga_cursor_show(bool on) { s_cur_on = on; }
-
-void vga_cursor_get(int *x, int *y, bool *shown)
-{
-    if (x) *x = s_cur_x + s_cur_hx;
-    if (y) *y = s_cur_y + s_cur_hy;
-    if (shown) *shown = s_cur_on;
-}
-
-void vga_cursor_overlay(uint8_t *dst)
-{
-    if (!s_cur_on) return;
-    for (int y = 0; y < s_cur_h; y++) {
-        for (int x = 0; x < s_cur_w; x++) {
-            int sx = s_cur_x + x, sy = s_cur_y + y;
-            uint8_t p = s_cur_px[y * CUR_MAX_W + x];
-            if (p != 0xFF && sx >= 0 && sx < VGA_W && sy >= 0 && sy < VGA_H) dst[sy * VGA_W + sx] = p;
-        }
-    }
-}
+const char *vga_name(void) { return "640 x 480, 64 colours, 60 Hz VGA"; }
 
 int vga_fetch_row(void) { return s_fetch_row; }
 

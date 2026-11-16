@@ -127,6 +127,7 @@ int IRAM_ATTR comp_flush(void)
             y += rows;
             first = false;
         }
+        display_damage(x0, list[i].y, w, list[i].h);
     }
 
     uint32_t work = c_render + c_copy;

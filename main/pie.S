@@ -1,6 +1,7 @@
 // ESP32-S3 PIE (SIMD) kernels: 16 bytes per instruction.
 // All pointers must be 16-byte aligned; counts are in 16-byte blocks.
 #include "sdkconfig.h"
+#if CONFIG_BEVEL_PIE
 
     .text
     .align 4
@@ -50,3 +51,4 @@ pie_copy16_isr:
     wsr     a5, cpenable
     rsync
     retw
+#endif // CONFIG_BEVEL_PIE

@@ -2,6 +2,13 @@
 #include <string.h>
 #include "gfx.h"
 #include "esp_attr.h"
+#include "sdkconfig.h"
+
+#if !CONFIG_BEVEL_PIE
+// Portable versions of the PIE kernels in pie.S (emulators, the desktop simulator).
+void pie_copy16(void *dst, const void *src, int blocks) { memcpy(dst, src, (size_t)blocks << 4); }
+void pie_fill16(void *dst, int c, int blocks) { memset(dst, c, (size_t)blocks << 4); }
+#endif
 
 bool rect_intersect(rect_t *out, const rect_t *a, const rect_t *b)
 {

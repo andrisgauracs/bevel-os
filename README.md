@@ -38,6 +38,7 @@ at 2x, not photos. More in [captures/](captures/), all from the real board.
 - [Hardware](#hardware)
 - [How it works](#how-it-works)
 - [Building and flashing](#building-and-flashing)
+- [Remote desktop (VNC), simulator and emulator](#remote-desktop-vnc-simulator-and-emulator)
 - [Apps and files](#apps-and-files)
 - [Doom](#doom)
 - [Limitations](#limitations)
@@ -234,6 +235,88 @@ The helper scripts (`tools/flash.sh`, `tools/build_apps.sh`, `tools/build_doom.s
 scripts written for the development Mac: they source ESP-IDF from `~/esp/esp-idf` and use the
 BSD `stat -f`. On Linux, adjust those two things.
 
+## Remote desktop (VNC), simulator and emulator
+
+Three ways to use Bevel OS without the VGA monitor. They share one display interface
+(`main/vga.h`): the VGA scan-out (`vga.c`) is one backend, `headless.c` (framebuffer only) the
+other, and the compositor reports every rectangle it redraws to the VNC server.
+
+### VNC server
+
+`idf.py menuconfig` → **Bevel OS**:
+
+| Option | Effect |
+|---|---|
+| Local display: VGA / None | *None* never starts the LCD peripheral: the VGA pins are free and the scan-out costs nothing |
+| VNC server | serves the desktop on TCP 5900, with or without VGA (both at once works as a built-in KVM) |
+| VNC password | classic VNC authentication; empty = none. It is weak (DES, no encryption): local network only |
+| Default Wi-Fi network | joined at boot when nothing was saved from the Network panel, so a headless board is reachable |
+
+Any VNC viewer works (TigerVNC, RealVNC, Remmina, gvncviewer; noVNC through websockify). The
+server speaks RFB 3.3/3.7/3.8 with Raw and Hextile, sends only what changed, and passes the
+pointer as a cursor shape when the viewer supports it (moving the mouse then costs nothing on
+the wire). The viewer's keyboard layout is respected: the characters typed are sent, not the key
+positions, so an AZERTY keyboard types what it shows. One viewer at a time; a new one takes over.
+System Information and the serial command `vnc` show the address and the connected viewer.
+
+### Desktop simulator (Linux)
+
+The same OS sources built for the PC, in an SDL window: FreeRTOS tasks run as threads, the drive
+is a folder, the network is the host's (pages are fetched with `curl`), and the apps (Snake,
+Doom...) are rebuilt as x86-64 shared objects loaded like the ELF files on the board, crash
+handling and "End task" included. Useful to work on the UI without flashing, with a debugger or
+sanitizers.
+
+```sh
+host/get-sdl2.sh                       # only if libsdl2-dev is not installed (no root needed)
+cmake -S host -B build-host && cmake --build build-host -j
+build-host/bevel-sim                   # --scale N, --disk DIR, --headless, --raw-keys
+```
+
+The drive is `build-host/disk` (put `doom1.wad` in `build-host/disk/Apps/` for Doom). The VNC
+server listens on 127.0.0.1:5900 and the serial channel on 127.0.0.1:47812, so every tool works:
+`BV_PORT=tcp:127.0.0.1:47812 python3 tools/bv.py daemon &`, then `kbtest.py`, `vnctest.py`,
+`bv.py dump`. See [host/README.md](host/README.md).
+
+### QEMU
+
+The real firmware, Xtensa apps and all, in Espressif's QEMU (`machine esp32s3`). QEMU emulates
+neither the LCD peripheral nor USB nor the Wi-Fi radio, so `sdkconfig.qemu` builds it headless,
+with VNC over the emulated OpenCores Ethernet, without USB input and without the PIE vector
+instructions.
+
+```sh
+python $IDF_PATH/tools/idf_tools.py install qemu-xtensa    # once
+tools/qemu.sh                          # builds build-qemu/ and boots it; --wipe for a blank drive
+gvncviewer 127.0.0.1:0                 # or any viewer on 127.0.0.1:5900
+BV_PORT=tcp:127.0.0.1:5555 python3 tools/bv.py daemon &   # serial channel
+```
+
+The drive is kept between runs in `build-qemu/qemu_flash.bin`.
+
+### Tests
+
+`tools/vnctest.py` is a VNC viewer written for testing: it compares the picture it receives with
+the framebuffer read over the serial channel, pixel by pixel (Raw 8-bit and Hextile 32-bit), types
+Shift-dependent text into the editor, double-clicks and drags with the mouse, checks the pointer
+reports, the password (with `openssl` as an independent DES) and the takeover by a second viewer.
+
+| Test | Simulator | QEMU |
+|---|---|---|
+| `kbtest.py` (keyboard only, 34 steps) | 34 of 34 | 34 of 34 |
+| `vnctest.py` (17 checks, 18 with `--password`) | 17 of 17, 18 of 18 | 17 of 17 |
+| CrashTest: bad write, divide by zero, hang + End task | caught | caught |
+| Doom E1M1 (the WAD sent with `bv.py put`, checksum verified) | runs | runs |
+
+On the board, the VGA build, the VGA + VNC build and the headless + VNC build compile, but none
+of this has run on the hardware yet: VNC over Wi-Fi (frame rate, CPU cost on core 0, internal
+RAM) is unmeasured.
+
+QEMU's emulated UART sometimes drops or repeats input under heavy traffic, so `bv.py put` sends
+`putat <offset> <data>` lines that can be repeated safely, checks each acknowledgement's checksum,
+retries, and verifies the size and an Adler-32 of the whole file at the end (`size`, `sum`).
+Other serial commands added: `run <path>` (start a program from the drive), `vnc` (server state).
+
 ## Apps and files
 
 An app is one C file that includes `apps/bevel.h` and exports
@@ -292,6 +375,10 @@ To rebuild `Doom.elf` from source: `tools/build_doom.sh`.
 - **Power loss:** the 12-of-12 test used resets during a file write. A real unplug was tested once
   (the OS came back, but the JetKVM's USB input did not until a port watchdog was added; that fix
   was not re-tested with the JetKVM).
+- **VNC:** one viewer at a time, and a new connection takes over before it has authenticated
+  (so that a viewer whose connection died can always get back in): someone on the network can
+  disconnect the current viewer, without seeing or controlling anything. Classic VNC
+  authentication only, no encryption. No clipboard, no colour-map pixel formats, no ZRLE/Tight.
 - PSRAM runs at 80 MHz. 120 MHz measured about 58% faster but is experimental in ESP-IDF, so it
   is off.
 
@@ -335,14 +422,16 @@ main/            the OS: video, compositor, window manager, toolkit, shell, apps
 main/assets/     fonts, icons and cursors as C arrays (generated by tools/assets/gen_assets.py)
 apps/            loadable apps and the app API header (bevel.h); apps/doom/ is the Doom port
 disk/            files the firmware embeds and writes to the drive (Apps/*.elf, Welcome.txt, Bevel.bmp)
-tools/           bv.py serial tool, build/flash scripts, tests (kbtest.py, powercut.py), asset sources
+tools/           bv.py serial tool, build/flash scripts, qemu.sh, tests (kbtest.py, vnctest.py,
+                 powercut.py), asset sources
+host/            the desktop simulator: ESP-IDF/FreeRTOS on POSIX, SDL window, x86-64 app loader
 third_party/     doomgeneric (GPL v2); the Doom WAD is fetched, not committed
 enclosure/       Blender scripts, STLs and renders for the 3D-printed box
 captures/        framebuffer screenshots from the real board
 docs/            design notes, performance log, hardware notes, the build brief, session summaries
 INTERVENTIONS.md every manual action by the human
 partitions.csv   flash layout
-sdkconfig.defaults, sdkconfig   ESP-IDF configuration
+sdkconfig.defaults, sdkconfig   ESP-IDF configuration; sdkconfig.qemu for the emulator
 ```
 
 Deep dives: [docs/OS-REPORT.md](docs/OS-REPORT.md) (what was built),
