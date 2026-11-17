@@ -12,6 +12,11 @@ and serves commands on localhost.
   bv.py reset                  restart the board ("reboot" command) and print the boot log
   bv.py log [lines]            tail of the serial log
   bv.py quit                   stop the daemon (needed before flashing)
+
+  bv.py direct "<line>" [secs]    send a command line without the daemon: opens the port itself and
+                                  prints what came back. Use it when a background process or a
+                                  listening socket is not allowed (a sandboxed session, say).
+  bv.py directdump out.png [nocursor]   save the framebuffer as PNG, also without the daemon
 """
 import glob, os, sys, socket, struct, threading, time, zlib
 
@@ -32,6 +37,108 @@ ADDR = ("127.0.0.1", 47811)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG = os.path.join(ROOT, "build", "serial.log")
 ENDS = (b"@@OK", b"@@ERR", b"@@END")
+
+
+def open_port():
+    """The board's console port, held by us instead of by the daemon."""
+    import serial
+    s = serial.Serial()
+    s.port = find_port(); s.baudrate = BAUD; s.timeout = 0.02; s.write_timeout = 5
+    s.dtr = False; s.rts = False
+    s.open()
+    return s
+
+
+def log_write(data):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "ab", buffering=0) as f:
+        f.write(data)
+
+
+def drain(s, secs=0.3):
+    """Throw away whatever the board logged before our first command."""
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        s.read(4096)
+
+
+def direct(lines, secs=8.0):
+    """Send command lines without the daemon: open the port, send, read until @@OK / @@ERR."""
+    s = open_port()
+    out = b""
+    try:
+        drain(s)
+        for ln in lines:
+            s.write(ln.encode() + b"\n")
+            end, got = time.time() + secs, b""
+            while time.time() < end:
+                d = s.read(4096)
+                if not d:
+                    continue
+                got += d
+                if not ln.startswith("~") and any(m in got for m in ENDS):
+                    break
+            out += got
+    finally:
+        s.close()
+    log_write(out)
+    return out
+
+
+def direct_dump(path, extra="", crop=None, scale=1, secs=60.0):
+    """The framebuffer as PNG, also without the daemon (the payload is longer than a command reply)."""
+    s = open_port()
+    out, need = b"", None
+    try:
+        drain(s)
+        s.write(("dump " + extra).strip().encode() + b"\n")
+        deadline = time.time() + secs
+        while time.time() < deadline:
+            out += s.read(65536)
+            if need is None:
+                i = out.find(b"@@FB16 ")
+                if i >= 0 and b"\n" in out[i:]:
+                    j = out.index(b"\n", i)
+                    need = j + 1 + int(out[i + 7:j].split()[2])
+            elif len(out) >= need:
+                break
+    finally:
+        s.close()
+    log_write(out)
+    if need is not None and len(out) < need:
+        print("dump arrived %d of %d bytes: the rows missing from the end will be black" % (len(out), need))
+    decode_dump(out, path, crop, scale, pad=True)
+
+
+def direct_put(local, remote, chunk=3072):
+    """Copy a file to the drive without the daemon, same putopen/putdata/putclose protocol."""
+    import base64
+    data = open(local, "rb").read()
+    s, t0 = open_port(), time.time()
+
+    def send(line, secs=30):
+        s.write(line.encode() + b"\n")
+        end, got = time.time() + secs, b""
+        while time.time() < end:
+            d = s.read(4096)
+            if d:
+                got += d
+                if any(m in got for m in ENDS):
+                    break
+        if b"@@OK" not in got:
+            raise SystemExit("%s failed: %r" % (line.split()[0], got[-150:]))
+
+    try:
+        drain(s)
+        send("putopen " + remote)
+        for i in range(0, len(data), chunk):
+            send("putdata " + base64.b64encode(data[i:i + chunk]).decode())
+            if (i // chunk) % 100 == 0:
+                print("%d%%" % (i * 100 // len(data)), end=" ", flush=True)
+        send("putclose", 120)
+    finally:
+        s.close()
+    print("\nsent %d bytes in %.0f s" % (len(data), time.time() - t0))
 
 
 def daemon():
@@ -128,13 +235,20 @@ def write_png(path, w, h, rgb, scale=1):
 
 
 def dump(path, extra="", crop=None, scale=1):
-    out = request(("dump " + extra).strip(), 60)
+    decode_dump(request(("dump " + extra).strip(), 60), path, crop, scale)
+
+
+def decode_dump(out, path, crop=None, scale=1, pad=False):
     i = out.find(b"@@FB16 ")
     if i < 0: sys.exit("no framebuffer header in reply: %r" % out[:200])
     j = out.index(b"\n", i)
     w, h, n = map(int, out[i + 7:j].split())
     data = out[j + 1:j + 1 + n]
-    if len(data) < n: sys.exit("short dump: %d of %d bytes" % (len(data), n))
+    if len(data) < n:
+        # a busy program (Doom runs at the same priority as the serial task) can overflow the
+        # console's TX ring in the middle of a dump: fill the gap with zero counts, which draw black
+        if not pad: sys.exit("short dump: %d of %d bytes" % (len(data), n))
+        data += b"\x00" * (n - len(data))
     # (count, RGB565 low byte, high byte) triplets: what the panel shows, overlays and pointer included
     rgb = bytearray()
     cache = {}
@@ -145,7 +259,9 @@ def dump(path, extra="", crop=None, scale=1):
             r, g, b = v >> 11, (v >> 5) & 63, v & 31
             px = cache[v] = bytes((r * 255 // 31, g * 255 // 63, b * 255 // 31))
         rgb += px * data[k]
-    if len(rgb) != w * h * 3: sys.exit("bad RLE length %d" % len(rgb))
+    if len(rgb) != w * h * 3:
+        if not pad: sys.exit("bad RLE length %d" % len(rgb))
+        if len(rgb) < w * h * 3: rgb += b"\0" * (w * h * 3 - len(rgb))
     if crop:
         x, y, cw, ch = crop
         rgb = b"".join(bytes(rgb[((y + r) * w + x) * 3:((y + r) * w + x + cw) * 3]) for r in range(ch))
@@ -160,6 +276,19 @@ if __name__ == "__main__":
     if a[0] == "daemon": daemon()
     elif a[0] == "cmd":
         sys.stdout.write(request(a[1], float(a[2]) if len(a) > 2 else 10).decode(errors="replace"))
+    elif a[0] in ("direct", "directdump"):
+        args = list(a[1:])
+        secs = 60.0 if a[0] == "directdump" else 8.0
+        try:
+            secs = float(args[-1]); args = args[:-1]
+        except (IndexError, ValueError):
+            pass
+        if a[0] == "direct":
+            sys.stdout.write(direct(args, secs).decode(errors="replace"))
+        else:
+            direct_dump(args[0], "nocursor" if "nocursor" in args[1:] else "", secs=secs)
+    elif a[0] == "directput":
+        direct_put(a[1], a[2])
     elif a[0] == "dump":
         extra = "nocursor" if "nocursor" in a else ""
         crop = None; scale = 1
