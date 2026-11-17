@@ -219,6 +219,10 @@ idf.py -p PORT flash                   # PORT = the board's COM port
 On Windows, `tools\flash.ps1 -Target esp32p4 -Port COM13` does build, flash and the serial daemon in
 one go. The S3 board's console is UART0 at 2 Mbaud; the P4 board talks over its USB-Serial-JTAG port.
 
+In VS Code, the ESP-IDF extension's "Select Project Configuration" offers `esp32s3` and `esp32p4`,
+the two configure presets in `CMakePresets.json`. Each builds in its own directory (`build-esp32s3/`,
+`build-esp32p4/`) with its own `sdkconfig` there, so switching does not touch the one in the tree.
+
 `sdkconfig.defaults` holds what both boards share, and `sdkconfig.defaults.esp32s3` /
 `sdkconfig.defaults.esp32p4` add what differs (PSRAM speed, the console, the partition table, Wi-Fi
 through the C6 on the P4). `idf.py set-target` rebuilds `sdkconfig` from those two files, so
@@ -372,6 +376,7 @@ INTERVENTIONS.md every manual action by the human
 partitions_esp32s3.csv, partitions_esp32p4.csv   flash layout, one per board
 sdkconfig.defaults and sdkconfig.defaults.esp32s3 / .esp32p4   the configuration both boards share
                  and what each adds; sdkconfig itself is what the last `idf.py set-target` wrote
+CMakePresets.json   one configure preset per board, for the ESP-IDF VS Code extension
 ```
 
 Deep dives: [docs/OS-REPORT.md](docs/OS-REPORT.md) (what was built),
