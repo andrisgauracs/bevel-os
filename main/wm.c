@@ -290,6 +290,8 @@ static void wm_paint(gfx_t *g, const rect_t *area)
     if (area->y + area->h > DESK_H) { shell_paint_taskbar(g, area); gfx_restore(g, &st); }
     menu_paint(g, area);
     gfx_restore(g, &st);
+    ui_popup_paint(g, area);
+    gfx_restore(g, &st);
     shell_paint_overlay(g, area);
     gfx_restore(g, &st);
 }
@@ -369,6 +371,7 @@ static void raise(window_t *w)
 void wm_activate(window_t *w)
 {
     if (menu_is_open()) menu_close_all();
+    ui_popup_close();
     if (!w) { set_active(NULL); return; }
     if (!wm_valid(w) || (w->flags & (WIN_DEAD | WIN_HIDDEN))) return;
     for (window_t *d; (d = modal_child(w)) != NULL;) w = d;
@@ -442,6 +445,7 @@ void wm_destroy(window_t *w)
 {
     if (!w || (w->flags & WIN_DEAD)) return;
     if (menu_is_open()) menu_close_all();
+    ui_popup_close();
     wm_invalidate(w);
     w->flags |= WIN_DEAD;
     // cancel dialogs that are modal to this window
@@ -708,6 +712,7 @@ static void handle_key(const event_t *e)
     if (e->down) s_alt_clean = is_alt && !(e->mods & (MOD_CTRL | MOD_SHIFT | MOD_GUI));
     if (shell_key(e)) { if (!is_alt) s_alt_clean = false; return; }
     if (menu_is_open()) { if (e->down) menu_key(e); s_alt_clean = false; return; }
+    if (ui_popup_is_open() && ui_popup_key(e)) { s_alt_clean = false; return; }
     if (s_drag.mode >= 3) { if (e->down) kb_move_key(e); return; }
     if (s_drag.mode) return;
     if (shell_has_focus() || !s_active) { if (e->down) shell_focus_key(e); return; }
@@ -854,6 +859,7 @@ static void handle_mouse(int type, int x, int y, int btn)
         return;
     }
     if (menu_is_open() && menu_mouse(type, x, y, btn)) return;
+    if (ui_popup_is_open() && ui_popup_mouse(type, x, y, btn)) return;
 
     if (type == EV_WHEEL) {
         window_t *w = window_at(x, y);

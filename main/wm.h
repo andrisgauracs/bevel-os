@@ -202,6 +202,13 @@ int  ui_listview_sel(const widget_t *lv);
 void ui_listview_select(widget_t *lv, int index);       // also scrolls it into view
 void ui_listview_context_pos(widget_t *lv, int *sx, int *sy); // screen position for a context menu
 
+// Drop-down list: a field showing the chosen item; the list opens over everything on a click,
+// Space, F4 or Alt+Down. Arrows and letters change the choice while it is closed. UI_SELECT on change.
+widget_t *ui_dropdown(window_t *win, int x, int y, int w, lv_get_fn get);   // 22 pixels high
+void ui_dropdown_set_count(widget_t *dd, int count);
+int  ui_dropdown_sel(const widget_t *dd);
+void ui_dropdown_select(widget_t *dd, int index);       // no UI_SELECT
+
 // Canvas: a custom-drawn, optionally focusable area.
 typedef struct {
     void (*paint)(widget_t *w, gfx_t *g);
@@ -259,3 +266,10 @@ bool menubar_key(window_t *w, const event_t *e);               // Alt / F10 / Al
 void menubar_click(window_t *w, int x, int y);
 window_t *menubar_owner(void);                                 // window whose menu bar is active, or NULL
 int  menubar_active_index(void);
+
+// Open drop-down list (ui.c), an overlay like the menus; used by wm.c
+bool ui_popup_is_open(void);
+void ui_popup_close(void);
+void ui_popup_paint(gfx_t *g, const rect_t *area);
+bool ui_popup_key(const event_t *e);                           // true if consumed
+bool ui_popup_mouse(int type, int x, int y, int btn);          // true if consumed

@@ -1001,6 +1001,304 @@ void ui_listview_context_pos(widget_t *w, int *sx, int *sy)
     *sx = ((listview_t *)w)->ctx_x; *sy = ((listview_t *)w)->ctx_y;
 }
 
+// ---------------------------------------------------------------- drop-down list
+
+// A closed field showing the chosen item, with an arrow button. The list opens as an overlay above
+// every window, like a menu, so it needs no room inside the dialog. Only one is open at a time.
+#define DD_MAX_ROWS 12
+#define DD_BTN_W 16
+typedef struct {
+    widget_t w;
+    lv_get_fn get;
+    int count, sel;
+    char typed[16];
+    uint32_t typed_ms;
+} dropdown_t;
+
+static struct {
+    dropdown_t *dd;                 // owner of the open list, NULL when closed
+    rect_t r;                       // screen rectangle of the list
+    int hot;                        // highlighted row
+    scroll_t sb;
+    bool sb_drag;
+} s_pop;
+
+static const uint16_t g_dd_arrow[4] = {0xFE00, 0x7C00, 0x3800, 0x1000};
+
+static const char *dd_text(dropdown_t *d, int i, const bitmap_t **icon)
+{
+    lv_item_t it = {0};
+    if (i >= 0 && i < d->count) d->get(&d->w, i, &it);
+    if (icon) *icon = it.icon;
+    return it.text ? it.text : "";
+}
+
+// type to find, for the closed field and the open list alike: the next item starting with the letters
+static int dd_find(dropdown_t *d, char ch, int from)
+{
+    uint32_t now = os_uptime_ms();
+    int n = strlen(d->typed);
+    if (now - d->typed_ms > 900) n = 0;
+    d->typed_ms = now;
+    if (n < (int)sizeof(d->typed) - 1) { d->typed[n++] = tolower((unsigned char)ch); d->typed[n] = 0; }
+    int start = from < 0 ? 0 : from + (n == 1 ? 1 : 0);
+    for (int k = 0; k < d->count; k++) {
+        int idx = (start + k) % d->count;
+        if (!strncasecmp(dd_text(d, idx, NULL), d->typed, n)) return idx;
+    }
+    return -1;
+}
+
+static void dd_paint(widget_t *w, gfx_t *g)
+{
+    dropdown_t *d = (dropdown_t *)w;
+    bool dis = w->flags & WF_DISABLED, open = s_pop.dd == d;
+    gfx_fill(g, 0, 0, w->r.w, w->r.h, dis ? C_FACE : C_FIELD);
+    ui_draw_sunken(g, 0, 0, w->r.w, w->r.h);
+    int bx = w->r.w - 2 - DD_BTN_W, bh = w->r.h - 4;
+    gfx_fill(g, bx, 2, DD_BTN_W, bh, C_FACE);
+    if (open) ui_draw_pressed(g, bx, 2, DD_BTN_W, bh); else ui_draw_raised(g, bx, 2, DD_BTN_W, bh);
+    int o = open ? 1 : 0;
+    gfx_glyph16(g, bx + (DD_BTN_W - 7) / 2 + o, 2 + (bh - 4) / 2 + o, g_dd_arrow, 7, 4, dis ? C_TEXT_DIS : C_TEXT);
+    gfx_state_t st;
+    gfx_save(g, &st);
+    if (gfx_clip(g, 2, 2, bx - 2, w->r.h - 4)) {
+        const bitmap_t *icon;
+        const char *txt = dd_text(d, d->sel, &icon);
+        uint8_t fg = dis ? C_TEXT_DIS : C_TEXT;
+        if (ui_focused(w) && !open) {
+            gfx_fill(g, 3, 3, bx - 4, w->r.h - 6, C_SEL);
+            gfx_dotted(g, 3, 3, bx - 4, w->r.h - 6, C_YELLOW);
+            fg = C_SEL_TEXT;
+        }
+        int tx = 5;
+        if (icon) { gfx_bitmap(g, tx, (w->r.h - 16) / 2, icon); tx += 20; }
+        gfx_text(g, tx, (w->r.h - FONT_UI_H) / 2, txt, -1, FONT_UI, fg);
+    }
+    gfx_restore(g, &st);
+}
+
+static void dd_set_sel(dropdown_t *d, int idx, bool notify)
+{
+    if (idx >= d->count) idx = d->count - 1;
+    if (idx < 0) idx = d->count ? 0 : -1;
+    bool changed = idx != d->sel;
+    d->sel = idx;
+    ui_invalidate(&d->w);
+    if (changed && notify) ui_notify(&d->w, UI_SELECT);
+}
+
+static void pop_ensure_visible(void)
+{
+    if (s_pop.hot < s_pop.sb.pos) s_pop.sb.pos = s_pop.hot;
+    if (s_pop.hot >= s_pop.sb.pos + s_pop.sb.page) s_pop.sb.pos = s_pop.hot - s_pop.sb.page + 1;
+    scroll_clamp(&s_pop.sb);
+}
+
+static void pop_open(dropdown_t *d)
+{
+    if (s_pop.dd) ui_popup_close();
+    if (d->count <= 0) return;
+    rect_t c;
+    wm_client_rect(d->w.win, &c);
+    int x = c.x + d->w.r.x, top = c.y + d->w.r.y, bottom = top + d->w.r.h;
+    // below the field if it fits, otherwise on whichever side has more room
+    int below = (DESK_H - bottom - 2) / LV_ROW_H, above = (top - 2) / LV_ROW_H;
+    int rows = d->count < DD_MAX_ROWS ? d->count : DD_MAX_ROWS;
+    bool up = rows > below && above > below;
+    int room = up ? above : below;
+    if (rows > room) rows = room > 1 ? room : 1;
+    int h = rows * LV_ROW_H + 2;
+    s_pop.dd = d;
+    s_pop.r = rect_make(x, up ? top - h : bottom, d->w.r.w, h);
+    s_pop.hot = d->sel < 0 ? 0 : d->sel;
+    s_pop.sb = (scroll_t){0, rows, d->count, 0, 0};
+    s_pop.sb_drag = false;
+    pop_ensure_visible();
+    comp_invalidate_rect(&s_pop.r);
+    ui_invalidate(&d->w);
+}
+
+bool ui_popup_is_open(void) { return s_pop.dd != NULL; }
+
+void ui_popup_close(void)
+{
+    dropdown_t *d = s_pop.dd;
+    if (!d) return;
+    s_pop.dd = NULL;
+    comp_invalidate_rect(&s_pop.r);
+    if (wm_valid(d->w.win)) ui_invalidate(&d->w);
+}
+
+static void pop_commit(void)
+{
+    dropdown_t *d = s_pop.dd;
+    int idx = s_pop.hot;
+    ui_popup_close();
+    if (d && wm_valid(d->w.win)) dd_set_sel(d, idx, true);
+}
+
+static bool pop_has_sb(void) { return s_pop.sb.total > s_pop.sb.page; }
+static rect_t pop_sb_rect(void)
+{
+    return rect_make(s_pop.r.x + s_pop.r.w - 1 - SCROLL_W, s_pop.r.y + 1, SCROLL_W, s_pop.r.h - 2);
+}
+
+void ui_popup_paint(gfx_t *g, const rect_t *area)
+{
+    dropdown_t *d = s_pop.dd;
+    if (!d || !rect_overlap(&s_pop.r, area)) return;
+    rect_t r = s_pop.r;
+    gfx_fill(g, r.x, r.y, r.w, r.h, C_FIELD);
+    gfx_frame(g, r.x, r.y, r.w, r.h, C_BLACK);
+    int inner_w = r.w - 2 - (pop_has_sb() ? SCROLL_W : 0);
+    gfx_state_t st;
+    gfx_save(g, &st);
+    if (gfx_clip(g, r.x + 1, r.y + 1, inner_w, r.h - 2)) {
+        for (int i = 0; i < s_pop.sb.page; i++) {
+            int idx = s_pop.sb.pos + i;
+            if (idx >= d->count) break;
+            int y = r.y + 1 + i * LV_ROW_H;
+            const bitmap_t *icon;
+            const char *txt = dd_text(d, idx, &icon);
+            uint8_t fg = C_TEXT;
+            if (idx == s_pop.hot) { gfx_fill(g, r.x + 1, y, inner_w, LV_ROW_H, C_SEL); fg = C_SEL_TEXT; }
+            int tx = r.x + 5;
+            if (icon) { gfx_bitmap(g, tx, y + 1, icon); tx += 20; }
+            gfx_text(g, tx, y + 3, txt, -1, FONT_UI, fg);
+        }
+    }
+    gfx_restore(g, &st);
+    if (pop_has_sb()) { rect_t sr = pop_sb_rect(); scroll_paint(g, &sr, &s_pop.sb, false); }
+}
+
+bool ui_popup_key(const event_t *e)
+{
+    dropdown_t *d = s_pop.dd;
+    if (!d) return false;
+    if (!e->down) return true;
+    int old_hot = s_pop.hot, old_pos = s_pop.sb.pos;
+    bool alt = e->mods & MOD_ALT;
+    switch (e->key) {
+    case K_UP: if (alt) { pop_commit(); return true; } s_pop.hot--; break;
+    case K_DOWN: if (alt) { pop_commit(); return true; } s_pop.hot++; break;
+    case K_HOME: s_pop.hot = 0; break;
+    case K_END: s_pop.hot = d->count - 1; break;
+    case K_PGUP: s_pop.hot -= s_pop.sb.page - 1; break;
+    case K_PGDN: s_pop.hot += s_pop.sb.page - 1; break;
+    case K_ENTER: case K_KP_ENTER: case K_F4: pop_commit(); return true;
+    case K_ESC: ui_popup_close(); return true;
+    case K_TAB: pop_commit(); return false;     // the window still moves the focus on
+    default:
+        if (e->ch > ' ' && e->ch < 127 && !(e->mods & (MOD_CTRL | MOD_ALT))) {
+            int idx = dd_find(d, e->ch, s_pop.hot);
+            if (idx >= 0) s_pop.hot = idx;
+        }
+    }
+    if (s_pop.hot < 0) s_pop.hot = 0;
+    if (s_pop.hot >= d->count) s_pop.hot = d->count - 1;
+    pop_ensure_visible();
+    if (s_pop.hot != old_hot || s_pop.sb.pos != old_pos) comp_invalidate_rect(&s_pop.r);
+    return true;
+}
+
+bool ui_popup_mouse(int type, int x, int y, int btn)
+{
+    dropdown_t *d = s_pop.dd;
+    if (!d) return false;
+    if (!wm_valid(d->w.win) || (d->w.win->flags & (WIN_DEAD | WIN_HIDDEN | WIN_MINIMIZED))) { ui_popup_close(); return false; }
+    if (type == EV_WHEEL) {
+        s_pop.sb.pos -= btn * 3;
+        scroll_clamp(&s_pop.sb);
+        comp_invalidate_rect(&s_pop.r);
+        return true;
+    }
+    rect_t sr = pop_sb_rect();
+    if (s_pop.sb_drag || (pop_has_sb() && type == EV_MOUSE_DOWN && btn == BTN_LEFT && rect_has(&sr, x, y))) {
+        if (type == EV_MOUSE_DOWN) s_pop.sb_drag = true;
+        if (scroll_mouse(&s_pop.sb, &sr, false, type, x, y, 1)) comp_invalidate_rect(&s_pop.r);
+        if (type == EV_MOUSE_UP) s_pop.sb_drag = false;
+        return true;
+    }
+    if (rect_has(&s_pop.r, x, y)) {
+        int row = (y - s_pop.r.y - 1) / LV_ROW_H;
+        if (row < 0) row = 0;
+        if (row >= s_pop.sb.page) row = s_pop.sb.page - 1;
+        int idx = s_pop.sb.pos + row;
+        if (idx >= d->count) idx = d->count - 1;
+        if (idx != s_pop.hot) { s_pop.hot = idx; comp_invalidate_rect(&s_pop.r); }
+        if (type == EV_MOUSE_UP && btn == BTN_LEFT) pop_commit();
+        return true;
+    }
+    if (type == EV_MOUSE_DOWN) {
+        // a press on the field itself only closes the list; anywhere else it also acts on what is there
+        rect_t c;
+        wm_client_rect(d->w.win, &c);
+        rect_t fr = rect_make(c.x + d->w.r.x, c.y + d->w.r.y, d->w.r.w, d->w.r.h);
+        ui_popup_close();
+        return rect_has(&fr, x, y);
+    }
+    return type == EV_MOUSE_UP;     // e.g. the release of the press that opened it
+}
+
+static bool dd_key(widget_t *w, const event_t *e)
+{
+    dropdown_t *d = (dropdown_t *)w;
+    if (e->mods & MOD_CTRL) return false;
+    bool alt = e->mods & MOD_ALT;
+    if (e->key == K_F4 && !alt) { pop_open(d); return true; }
+    if (alt && (e->key == K_DOWN || e->key == K_UP)) { pop_open(d); return true; }
+    if (alt) return false;
+    switch (e->key) {
+    case K_UP: case K_LEFT: dd_set_sel(d, d->sel - 1, true); return true;
+    case K_DOWN: case K_RIGHT: dd_set_sel(d, d->sel + 1, true); return true;
+    case K_HOME: dd_set_sel(d, 0, true); return true;
+    case K_END: dd_set_sel(d, d->count - 1, true); return true;
+    case K_SPACE: pop_open(d); return true;
+    }
+    if (e->ch > ' ' && e->ch < 127) {
+        int idx = dd_find(d, e->ch, d->sel);
+        if (idx >= 0) dd_set_sel(d, idx, true);
+        return true;
+    }
+    return false;
+}
+
+static void dd_mouse(widget_t *w, int type, int x, int y, int btn, int clicks)
+{
+    if (type != EV_MOUSE_DOWN || btn != BTN_LEFT) return;
+    pop_open((dropdown_t *)w);
+    // the moves and the release go to the list, so press, drag to an item and release picks it
+    ui_capture(NULL);
+}
+
+static void dd_destroy(widget_t *w) { if (s_pop.dd == (dropdown_t *)w) ui_popup_close(); }
+
+static const widget_class_t dd_class = {"dropdown", dd_paint, dd_key, dd_mouse, NULL, dd_destroy};
+
+widget_t *ui_dropdown(window_t *win, int x, int y, int w, lv_get_fn get)
+{
+    dropdown_t *d = ui_new(win, &dd_class, sizeof(dropdown_t), x, y, w, 22);
+    if (!d) return NULL;
+    d->get = get;
+    d->sel = -1;
+    d->w.flags = WF_TABSTOP | WF_WANT_CHARS | WF_WANT_ARROWS;
+    return &d->w;
+}
+
+void ui_dropdown_set_count(widget_t *w, int count)
+{
+    dropdown_t *d = (dropdown_t *)w;
+    if (s_pop.dd == d) ui_popup_close();
+    d->count = count;
+    if (d->sel >= count) d->sel = count - 1;
+    if (d->sel < 0 && count > 0) d->sel = 0;
+    ui_invalidate(w);
+}
+
+int ui_dropdown_sel(const widget_t *w) { return ((const dropdown_t *)w)->sel; }
+void ui_dropdown_select(widget_t *w, int index) { dd_set_sel((dropdown_t *)w, index, false); }
+
 // ---------------------------------------------------------------- canvas
 
 typedef struct { widget_t w; const canvas_ops_t *ops; } canvas_t;

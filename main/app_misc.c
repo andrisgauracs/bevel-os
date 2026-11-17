@@ -117,9 +117,9 @@ static void set_apply(widget_t *w, int code)
     audio_system_sounds = ui_checked(s_sd.sounds);
     if (vol != audio_volume) { audio_volume = vol; if (w == s_sd.volume) audio_chime(CHIME_INFO); }
 #endif
-    int z = ui_listview_sel(s_sd.zones);
+    int z = ui_dropdown_sel(s_sd.zones);
     if (z >= 0 && z != clock_zone()) clock_set_zone(z);
-    int l = ui_listview_sel(s_sd.layouts);
+    int l = ui_dropdown_sel(s_sd.layouts);
     if (l >= 0 && l != input_layout_get()) input_layout_set(l);  // typing changes as you pick
     // preview swatch
     for (widget_t *x = s_set->widgets; x; x = x->next) if (!strcmp(x->cls->name, "canvas")) ui_invalidate(x);
@@ -166,7 +166,7 @@ static void set_destroy(window_t *w) { s_set = NULL; }
 void app_settings(const char *arg)
 {
     if (s_set) { wm_activate(s_set); return; }
-    window_t *w = wm_create("Settings", 640, 424, WIN_DIALOG);
+    window_t *w = wm_create("Settings", 640, 334, WIN_DIALOG);
     w->icon = &icon16_settings;
     s_set = w;
     s_sd.old_color = shell_desktop_color; s_sd.old_speed = input_mouse_speed;
@@ -195,27 +195,27 @@ void app_settings(const char *arg)
     s_sd.speed->on_action = set_apply;
     ui_label(w, 350, 160, 30, 14, "Fast");
 
-    ui_groupbox(w, 10, 190, 380, 196, "Keyboard");
+    ui_groupbox(w, 10, 190, 380, 106, "Keyboard");
     // the layout is what the keys print: picked from the list, and typing changes straight away
-    ui_label(w, 22, 204, 100, 14, "Keyboard &layout:");
-    s_sd.layouts = ui_listview(w, 22, 220, 350, 126, layouts_get);
-    ui_listview_set_count(s_sd.layouts, layout_count);
-    ui_listview_select(s_sd.layouts, input_layout_get());
+    ui_label(w, 22, 212, 100, 14, "Keyboard &layout:");
+    s_sd.layouts = ui_dropdown(w, 122, 208, 250, layouts_get);
+    ui_dropdown_set_count(s_sd.layouts, layout_count);
+    ui_dropdown_select(s_sd.layouts, input_layout_get());
     s_sd.layouts->on_action = set_apply;
-    ui_label(w, 22, 352, 100, 14, "Repeat &delay:");
-    ui_label(w, 122, 352, 30, 14, "Short");
-    s_sd.delay = ui_slider(w, 152, 346, 190, 1, 8, (input_repeat_delay - 100) / 100);
+    ui_label(w, 22, 246, 100, 14, "Repeat &delay:");
+    ui_label(w, 122, 246, 30, 14, "Short");
+    s_sd.delay = ui_slider(w, 152, 240, 190, 1, 8, (input_repeat_delay - 100) / 100);
     s_sd.delay->on_action = set_apply;
-    ui_label(w, 350, 352, 30, 14, "Long");
-    ui_label(w, 22, 374, 100, 14, "Repeat &rate:");
-    ui_label(w, 122, 374, 30, 14, "Slow");
-    s_sd.rate = ui_slider(w, 152, 368, 190, 1, 8, input_repeat_rate / 5);
+    ui_label(w, 350, 246, 30, 14, "Long");
+    ui_label(w, 22, 272, 100, 14, "Repeat &rate:");
+    ui_label(w, 122, 272, 30, 14, "Slow");
+    s_sd.rate = ui_slider(w, 152, 266, 190, 1, 8, input_repeat_rate / 5);
     s_sd.rate->on_action = set_apply;
-    ui_label(w, 350, 374, 30, 14, "Fast");
+    ui_label(w, 350, 272, 30, 14, "Fast");
 
     // The right-hand column holds only the groups this board has hardware for, stacked from the top
-    // so a board without a backlight or without sound has no hole where those groups would be. The
-    // clock group takes the rest of the column and ends level with the keyboard group on the left.
+    // so a board without a backlight or without sound has no hole where those groups would be. It
+    // never reaches below the keyboard group, so OK and Cancel go under the left column's end.
     int gy = 8;
 #if DISP_HAS_BACKLIGHT
     ui_groupbox(w, 400, gy, 230, 46, "Screen");
@@ -233,15 +233,15 @@ void app_settings(const char *arg)
     s_sd.sounds->on_action = set_apply;
     gy += 78;
 #endif
-    ui_groupbox(w, 400, gy, 230, 386 - gy, "Clock");
+    ui_groupbox(w, 400, gy, 230, 68, "Clock");
     ui_label(w, 412, gy + 20, 100, 14, "Time &zone:");
-    s_sd.zones = ui_listview(w, 412, gy + 36, 206, 340 - gy, zones_get);
-    ui_listview_set_count(s_sd.zones, clock_zone_count());
-    ui_listview_select(s_sd.zones, clock_zone());
+    s_sd.zones = ui_dropdown(w, 412, gy + 36, 206, zones_get);
+    ui_dropdown_set_count(s_sd.zones, clock_zone_count());
+    ui_dropdown_select(s_sd.zones, clock_zone());
     s_sd.zones->on_action = set_apply;
 
-    widget_t *ok = ui_button(w, 468, 392, 78, 24, "OK", set_ok);
-    widget_t *ca = ui_button(w, 552, 392, 78, 24, "Cancel", set_cancel);
+    widget_t *ok = ui_button(w, 468, 302, 78, 24, "OK", set_ok);
+    widget_t *ca = ui_button(w, 552, 302, 78, 24, "Cancel", set_cancel);
     w->def_btn = ok; w->cancel_btn = ca;
     w->on_close = set_close;
     w->on_destroy = set_destroy;

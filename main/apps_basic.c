@@ -330,6 +330,8 @@ void app_bench(const char *arg)
 static const char *const s_fruit[] = {"Apple", "Apricot", "Banana", "Blackcurrant", "Cherry", "Cloudberry", "Damson",
     "Elderberry", "Fig", "Gooseberry", "Grape", "Kiwi", "Lemon", "Lime", "Mango", "Nectarine", "Orange", "Peach", "Pear", "Plum"};
 static void fruit_get(widget_t *lv, int i, lv_item_t *it) { it->text = s_fruit[i]; it->icon = &icon16_file; }
+static const char *const s_sizes[] = {"Small", "Medium", "Large", "Extra large"};
+static void size_get(widget_t *dd, int i, lv_item_t *it) { it->text = s_sizes[i]; }
 static void gal_hello(widget_t *b, int code)
 {
     widget_t *f = b->win->user;
@@ -366,6 +368,10 @@ void app_gallery(const char *arg)
     ui_radio(w, 140, 100, 60, "Th&ree", 1, false);
     ui_label(w, 12, 140, 60, 14, "&Speed:");
     ui_slider(w, 60, 134, 140, 1, 10, 5);
+    ui_label(w, 12, 176, 60, 14, "Si&ze:");
+    widget_t *dd = ui_dropdown(w, 60, 172, 140, size_get);
+    ui_dropdown_set_count(dd, 4);
+    ui_dropdown_select(dd, 1);
     ui_label(w, 216, 40, 100, 14, "&Fruit:");
     widget_t *lv = ui_listview(w, 216, 56, 192, 160, fruit_get);
     ui_listview_set_count(lv, 20);

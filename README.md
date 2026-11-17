@@ -164,7 +164,7 @@ C and a little assembly). The full description is in [docs/OS-REPORT.md](docs/OS
   the beam. That gives tear-free updates with a single framebuffer; it also turned out cheaper
   than not waiting, because the scan-out has just pulled those rows into the cache.
 - **Window manager and toolkit** (`main/wm.c`, `main/ui.c`, `main/menu.c`, `main/dlg.c`,
-  `main/shell.c`): z-order, focus, keyboard navigation, buttons, lists, text fields, sliders,
+  `main/shell.c`): z-order, focus, keyboard navigation, buttons, lists, drop-down lists, text fields, sliders,
   menus, dialogs, the taskbar and desktop. No LVGL.
 - **Cores:** the scan-out interrupt and the GUI task share core 1 (moving the interrupt to the
   other core broke beam racing; see [docs/PERF.md](docs/PERF.md)). USB, the drive, the serial
