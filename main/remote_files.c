@@ -293,7 +293,11 @@ static esp_err_t put_post(httpd_req_t *req)
 // The drive and the card's mount point are not files to delete or rename.
 static bool changeable(const char *path)
 {
-    return strcmp(path, DISK_ROOT) && strcmp(path, SD_ROOT);
+    if (!strcmp(path, DISK_ROOT)) return false;
+#ifdef SD_ROOT
+    if (!strcmp(path, SD_ROOT)) return false;
+#endif
+    return true;
 }
 
 static esp_err_t delete_post(httpd_req_t *req)
