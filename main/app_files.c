@@ -313,11 +313,12 @@ static widget_t *crumbs_new(window_t *win, int x, int y, int w, crumbs_t *c, con
     return wd;
 }
 
-// The "up one folder" button: no tab stop, so a click leaves the keyboard on the list.
-static widget_t *up_button(window_t *win, int x, int y, void (*on_click)(widget_t *, int))
+// A small icon button beside the path (up one folder, refresh): no tab stop, so a click leaves the
+// keyboard on the list.
+static widget_t *tool_button(window_t *win, int x, int y, const bitmap_t *icon, void (*on_click)(widget_t *, int))
 {
     widget_t *b = ui_button(win, x, y, 24, 20, "", on_click);
-    ui_button_icon(b, &icon16_up);
+    ui_button_icon(b, icon);
     b->flags &= ~WF_TABSTOP;
     return b;
 }
@@ -339,7 +340,7 @@ static const char *child_on_way(const char *from, const char *to, char *buf, int
 
 typedef struct {
     window_t *win;
-    widget_t *list, *path, *up, *status;
+    widget_t *list, *path, *up, *refresh, *status;
     crumbs_t crumbs;
     char dir[256];
     fs_entry_t *ents;
@@ -415,6 +416,8 @@ static void files_up(files_t *f)
 }
 
 static void files_up_click(widget_t *b, int code) { files_up(b->win->user); }
+static void files_command(window_t *w, int cmd);
+static void files_refresh_click(widget_t *b, int code) { files_command(b->win, FC_REFRESH); }
 
 static void files_open(files_t *f)
 {
@@ -527,8 +530,6 @@ static void files_paste(files_t *f)
     if (!ok) msgbox(f->win, "Paste", "Could not finish. The drive may be full.", MB_ERROR, MB_OK);
     files_load(f, name);
 }
-
-static void files_command(window_t *w, int cmd);
 
 // The SD card came or went: every open Files window lists its folder again.
 void files_refresh_all(void)
@@ -663,7 +664,8 @@ static void files_resize(window_t *w)
 {
     files_t *f = w->user;
     int cw = wm_client_w(w), ch = wm_client_h(w);
-    ui_set_rect(f->path, 32, 3, cw - 36, 20);
+    ui_set_rect(f->path, 32, 3, cw - 64, 20);
+    ui_set_rect(f->refresh, cw - 28, 3, 24, 20);
     ui_set_rect(f->list, 4, 26, cw - 8, ch - 26 - 22);
     ui_set_rect(f->status, 8, ch - 17, cw - 16, 14);
 }
@@ -685,8 +687,9 @@ void app_files(const char *arg)
     f->win = w;
     wm_set_menubar(w, fm_bar);
     strlcpy(f->dir, (arg && fs_is_dir(arg)) ? arg : DISK_ROOT, sizeof(f->dir));
-    f->up = up_button(w, 4, 3, files_up_click);
-    f->path = crumbs_new(w, 32, 3, 404, &f->crumbs, f->dir, files_go);
+    f->up = tool_button(w, 4, 3, &icon16_up, files_up_click);
+    f->path = crumbs_new(w, 32, 3, 376, &f->crumbs, f->dir, files_go);
+    f->refresh = tool_button(w, 412, 3, &icon16_refresh, files_refresh_click);
     f->list = ui_listview(w, 4, 26, 432, 250, files_get);
     static const char *const titles[] = {"Name", "Size", "Type"};
     static const int widths[] = {230, 90, 90};
@@ -872,7 +875,7 @@ bool file_dialog(window_t *owner, bool save, const char *title, char *path, int 
     if (!d.dir[0] || !fs_is_dir(d.dir) || strncmp(d.dir, DISK_ROOT, strlen(DISK_ROOT))) strcpy(d.dir, DISK_ROOT "/Documents");
     if (!fs_is_dir(d.dir)) strcpy(d.dir, DISK_ROOT);
     ui_label(w, 10, 13, 56, 14, save ? "Save in:" : "Look in:");
-    d.up = up_button(w, 66, 9, fdlg_up_click);
+    d.up = tool_button(w, 66, 9, &icon16_up, fdlg_up_click);
     d.path = crumbs_new(w, 94, 9, 296, &d.crumbs, d.dir, fdlg_go);
     d.list = ui_listview(w, 10, 34, 380, 180, fdlg_get);
     static const char *const titles[] = {"Name", "Size"};
