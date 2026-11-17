@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "fsutil.h"
 #include "layout.h"
+#include "net.h"
 #include "esp_heap_caps.h"
 
 // ================================================================ settings
@@ -58,6 +59,7 @@ void settings_load(void)
             for (int i = 0; i < layout_count; i++)
                 if (!strcmp(eq + 1, layout_name[i])) { input_layout_set(i); serial_printf("layout set %d from settings\n", i); }
         }
+        else if (!strcmp(line, "remote")) remote_set(v != 0);
     }
     free(s);
 }
@@ -76,7 +78,7 @@ bool settings_save(void)
 #if BOARD_HAS_AUDIO
                "volume=%d\nsounds=%d\n"
 #endif
-               "zone=%s\nlayout=%s\n",
+               "zone=%s\nlayout=%s\nremote=%d\n",
             shell_desktop_color, input_mouse_speed, input_repeat_delay, input_repeat_rate,
 #if DISP_HAS_BACKLIGHT
             disp_get_brightness(),
@@ -84,7 +86,7 @@ bool settings_save(void)
 #if BOARD_HAS_AUDIO
             audio_volume, audio_system_sounds,
 #endif
-            clock_zone_name(clock_zone()), layout_name[input_layout_get()]);
+            clock_zone_name(clock_zone()), layout_name[input_layout_get()], remote_on());
     if (fclose(f) != 0) return false;
     unlink(SETTINGS_FILE);
     return rename(SETTINGS_FILE ".tmp", SETTINGS_FILE) == 0;
@@ -92,8 +94,9 @@ bool settings_save(void)
 
 static window_t *s_set;
 static struct {
-    widget_t *colors, *speed, *delay, *rate, *bright, *volume, *sounds, *zones, *layouts;
+    widget_t *colors, *speed, *delay, *rate, *bright, *volume, *sounds, *zones, *layouts, *remote, *remote_url;
     uint8_t old_color; int old_speed, old_delay, old_rate, old_bright, old_volume, old_sounds, old_zone, old_layout;
+    bool old_remote;
 } s_sd;
 
 static void colors_get(widget_t *lv, int i, lv_item_t *it) { it->text = s_colors[i].name; }
@@ -101,6 +104,19 @@ static void colors_get(widget_t *lv, int i, lv_item_t *it) { it->text = s_colors
 static void zones_get(widget_t *lv, int i, lv_item_t *it) { it->text = clock_zone_name(i); }
 
 static void layouts_get(widget_t *lv, int i, lv_item_t *it) { it->text = layout_name[i]; }
+
+// what the Remote access group says under its switch
+static void remote_text(void)
+{
+    char t[64];
+    net_status_t st;
+    net_status(&st);
+    const char *ip = st.eth_ip[0] ? st.eth_ip : st.state == NET_CONNECTED ? st.ip : "";
+    if (!remote_on()) strcpy(t, "Off");
+    else if (ip[0]) snprintf(t, sizeof(t), "Open http://%s/", ip);
+    else strcpy(t, "On, once the network is connected");
+    ui_set_text(s_sd.remote_url, t);
+}
 
 static void set_apply(widget_t *w, int code)
 {
@@ -121,6 +137,7 @@ static void set_apply(widget_t *w, int code)
     if (z >= 0 && z != clock_zone()) clock_set_zone(z);
     int l = ui_dropdown_sel(s_sd.layouts);
     if (l >= 0 && l != input_layout_get()) input_layout_set(l);  // typing changes as you pick
+    if (ui_checked(s_sd.remote) != remote_on()) { remote_set(ui_checked(s_sd.remote)); remote_text(); }
     // preview swatch
     for (widget_t *x = s_set->widgets; x; x = x->next) if (!strcmp(x->cls->name, "canvas")) ui_invalidate(x);
 }
@@ -156,6 +173,7 @@ static void set_cancel(widget_t *b, int code)
 #endif
     clock_set_zone(s_sd.old_zone);
     input_layout_set(s_sd.old_layout);
+    if (remote_on() != s_sd.old_remote) remote_set(s_sd.old_remote);
     comp_invalidate_all();
     wm_destroy(s_set);
 }
@@ -179,6 +197,7 @@ void app_settings(const char *arg)
 #endif
     s_sd.old_zone = clock_zone();
     s_sd.old_layout = input_layout_get();
+    s_sd.old_remote = remote_on();
 
     ui_groupbox(w, 10, 8, 380, 124, "Desktop");
     ui_label(w, 22, 28, 100, 14, "&Colour:");
@@ -239,6 +258,14 @@ void app_settings(const char *arg)
     ui_dropdown_set_count(s_sd.zones, clock_zone_count());
     ui_dropdown_select(s_sd.zones, clock_zone());
     s_sd.zones->on_action = set_apply;
+    gy += 74;
+
+    // the screen in a web browser elsewhere: no password, so it is off until switched on here
+    ui_groupbox(w, 400, gy, 230, 64, "Remote access");
+    s_sd.remote = ui_checkbox(w, 412, gy + 18, 210, "&Web page with this screen", remote_on());
+    s_sd.remote->on_action = set_apply;
+    s_sd.remote_url = ui_label(w, 430, gy + 40, 192, 14, "");
+    remote_text();
 
     widget_t *ok = ui_button(w, 468, 302, 78, 24, "OK", set_ok);
     widget_t *ca = ui_button(w, 552, 302, 78, 24, "Cancel", set_cancel);

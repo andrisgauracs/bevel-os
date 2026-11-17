@@ -63,6 +63,10 @@ at 2x, not photos. More in [captures/](captures/), all from the real board.
   (`apps/bevel.h`). Included: Snake (4.8 KB), Hello, CrashTest and Doom.
 - A crash in an app's own code becomes an error dialog and the desktop keeps running; a hung app
   is marked "not responding" and can be ended.
+- Remote screen: with Settings > Remote access switched on, `http://<board address>/` in a browser
+  on another machine shows the screen and takes that browser's mouse, wheel and keyboard (keys go
+  over as physical keys, so the board's keyboard layout applies). There is no password: anyone on
+  the network can use it while it is on, so it is off until switched on. `main/remote.c`.
 - Original look in the mid-90s style: own bitmap fonts, icons and cursors (drawn as ASCII art in
   `tools/assets/src/`), no copied artwork.
 

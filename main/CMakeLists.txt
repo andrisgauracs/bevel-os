@@ -33,13 +33,13 @@ endif()
 idf_component_register(SRCS "main.c" "boot.c" "board.c" "audio.c" "clock.c" ${BOARD_SRCS}
                             "gfx.c" "comp.c" "input.c" "layout_gen.c" "serial.c" "perf.c"
                             "wm.c" "ui.c" "menu.c" "shell.c" "dlg.c" "apps.c" "apps_basic.c"
-                            "storage.c" "app_loader.c" "app_files.c" "app_editor.c" "app_misc.c" "net.c" "app_net.c" "app_browser.c"
+                            "storage.c" "app_loader.c" "app_files.c" "app_editor.c" "app_misc.c" "net.c" "remote.c" "app_net.c" "app_browser.c"
                             "app_player.c" "usb_input.c" "${ASSET_DIR}/assets_gen.c"
                        INCLUDE_DIRS "." "${ASSET_DIR}"
                        REQUIRES esp_lcd esp_driver_gpio esp_driver_i2c esp_driver_i2s esp_driver_usb_serial_jtag
                                 esp_psram spi_flash
                                 esp_timer esp_hw_support fatfs wear_levelling vfs mbedtls esp_app_format
-                                esp_wifi esp_netif esp_event nvs_flash esp_http_client esp-tls
+                                esp_wifi esp_netif esp_event nvs_flash esp_http_client esp_http_server esp-tls
                                 ${BOARD_REQUIRES}
                        EMBED_FILES ${EMBEDDED})
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-format-truncation)

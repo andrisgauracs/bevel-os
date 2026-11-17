@@ -25,3 +25,8 @@ void net_disconnect(bool forget);
 int net_fetch(const char *url, char **body, int *len, char *ctype, int ctype_n, char *final_url, int final_n,
               int max_bytes, volatile bool *cancel, volatile int *progress);
 const char *net_error_text(int code);
+
+// Remote screen (remote.c): a web page on port 80 that shows the screen and takes mouse and keyboard.
+void remote_set(bool on);                              // Settings switch; it starts once the network stack is up
+bool remote_on(void);
+void remote_stack_ready(void);                         // net.c: the TCP/IP stack is running

@@ -265,6 +265,7 @@ static void boot_task(void *arg)
 #if BOARD_HAS_ETH
         eth_start();
 #endif
+        remote_stack_ready();
     }
     int n;
     char *s = fs_read_all(WIFI_FILE, &n);
