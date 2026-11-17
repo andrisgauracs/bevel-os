@@ -261,10 +261,30 @@ static void stop(void)
     ESP_LOGI(TAG, "web access off");
 }
 
+// Starting and stopping happen in a task of their own, never in the caller: httpd_stop waits for the
+// server's task to finish the request it is on, and with the system core busy (the camera, a large
+// copy) that can take a while. Settings, which switches it from the GUI task, must not hang on that.
+static TaskHandle_t s_ctl;
+
+static void ctl_task(void *arg)
+{
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_want && s_stack_ready) start();
+        else if (!s_want) stop();
+    }
+}
+
+static void poke(void)
+{
+    if (!s_ctl) xTaskCreatePinnedToCore(ctl_task, "remote_ctl", 3072, NULL, 3, &s_ctl, SYS_CORE);
+    if (s_ctl) xTaskNotifyGive(s_ctl);
+}
+
 void remote_set(bool on)
 {
     s_want = on;
-    if (on) start(); else stop();
+    if (on || s_srv) poke();
 }
 
 bool remote_on(void) { return s_want; }
@@ -272,5 +292,5 @@ bool remote_on(void) { return s_want; }
 void remote_stack_ready(void)
 {
     s_stack_ready = true;
-    if (s_want) start();
+    if (s_want) poke();
 }
