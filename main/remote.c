@@ -7,6 +7,7 @@
 //   POST /in       input events, one per line: "m x y" pointer to, "b mask" buttons (BTN_*),
 //                  "w d" wheel, "k usage 1|0" key down/up (USB HID usage, so the board's own
 //                  keyboard layout decides what a key types)
+//   /files, /fs/... the drive and the SD card: list, download, upload (remote_files.c)
 //
 // The screen is cut into 32x32 tiles. Each /fb request takes a fresh snapshot (at most every 30 ms),
 // compares it with the previous one and gives every changed tile the next version number; the reply
@@ -24,6 +25,8 @@
 #include "os.h"
 
 static const char *TAG = "remote";
+
+void remote_files_register(httpd_handle_t srv);     // remote_files.c
 
 #define TILE 32
 #define TCOLS ((SCREEN_W + TILE - 1) / TILE)
@@ -49,7 +52,8 @@ static const char s_page[] =
 "canvas{display:block;margin:0 auto;max-width:100%;max-height:calc(100vh - 28px);cursor:crosshair;"
 "outline:none;touch-action:none;image-rendering:pixelated}"
 "</style></head><body><div id=bar><span>Bevel OS &middot; <span id=st>connecting</span> &middot; "
-"click the screen to type into it</span><span class=grow></span><button id=shot>Save screenshot</button></div>"
+"click the screen to type into it</span><span class=grow></span><button onclick=\"window.open('/files')\">Files</button>"
+"<button id=shot>Save screenshot</button></div>"
 "<canvas id=s tabindex=0></canvas><script>\n"
 "const c=document.getElementById('s'),g=c.getContext('2d'),st=document.getElementById('st');\n"
 "let W=0,H=0,T=0,img=null,ver=0;\n"
@@ -243,6 +247,7 @@ static void start(void)
     cfg.core_id = SYS_CORE;
     cfg.task_priority = 3;
     cfg.lru_purge_enable = true;    // a browser that went away without closing frees its socket
+    cfg.max_uri_handlers = 12;
     if (httpd_start(&s_srv, &cfg) != ESP_OK) { ESP_LOGE(TAG, "the web server did not start"); s_srv = NULL; return; }
     static const httpd_uri_t uris[] = {
         {.uri = "/", .method = HTTP_GET, .handler = page_get},
@@ -250,6 +255,7 @@ static void start(void)
         {.uri = "/in", .method = HTTP_POST, .handler = in_post},
     };
     for (int i = 0; i < 3; i++) httpd_register_uri_handler(s_srv, &uris[i]);
+    remote_files_register(s_srv);
     ESP_LOGI(TAG, "web access on, port %d", cfg.server_port);
 }
 

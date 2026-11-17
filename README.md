@@ -66,7 +66,9 @@ at 2x, not photos. More in [captures/](captures/), all from the real board.
 - Remote screen: with Settings > Remote access switched on, `http://<board address>/` in a browser
   on another machine shows the screen and takes that browser's mouse, wheel and keyboard (keys go
   over as physical keys, so the board's keyboard layout applies). There is no password: anyone on
-  the network can use it while it is on, so it is off until switched on. `main/remote.c`.
+  the network can use it while it is on, so it is off until switched on. `main/remote.c`. Its
+  Files button opens `http://<board address>/files`, which lists the drive and the SD card and
+  downloads and uploads files (`main/remote_files.c`).
 - Original look in the mid-90s style: own bitmap fonts, icons and cursors (drawn as ASCII art in
   `tools/assets/src/`), no copied artwork.
 
