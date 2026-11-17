@@ -478,17 +478,28 @@ void app_viewer(const char *arg)
     if (!px) { msgbox(NULL, "Picture Viewer", err, MB_ERROR, MB_OK); return; }
     viewer_t *v = calloc(1, sizeof(viewer_t));
     v->px = px; v->w = iw; v->h = ih; v->zoom = 1;
-    int cw = iw < 160 ? 160 : iw > 600 ? 600 : iw, ch = ih < 100 ? 100 : ih > 400 ? 400 : ih;
+    // the window fits the picture; a picture larger than the desktop gets the whole desktop (the
+    // window opens maximised, and restores to the desktop size less its frame)
+    int cw = iw < 160 ? 160 : iw, ch = ih < 100 ? 100 : ih;
     char title[96];
     snprintf(title, sizeof(title), "%s (%d x %d) - Picture Viewer", fs_basename(path), iw, ih);
     window_t *w = wm_create(title, cw, ch, WIN_RESIZABLE);
     w->icon = &icon16_image;
     w->user = v;
     v->win = w;
+    int fw = w->r.w - cw, fh = w->r.h - ch;         // the frame around the picture
+    bool too_big = w->r.w > SCREEN_W || w->r.h > DESK_H;
+    if (too_big) {
+        cw = SCREEN_W - fw;
+        ch = DESK_H - fh;
+        wm_resize(w, SCREEN_W, DESK_H);
+        wm_move(w, 0, 0);
+    }
     v->canvas = ui_canvas(w, 0, 0, cw, ch, &view_ops, true);
     w->on_resize = view_resize;
     w->on_destroy = view_destroy;
     wm_show(w);
+    if (too_big) wm_maximize(w, true);
 }
 
 // ================================================================ terminal
