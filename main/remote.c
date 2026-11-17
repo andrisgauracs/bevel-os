@@ -52,7 +52,7 @@ static const char s_page[] =
 "canvas{display:block;margin:0 auto;max-width:100%;max-height:calc(100vh - 28px);cursor:crosshair;"
 "outline:none;touch-action:none;image-rendering:pixelated}"
 "</style></head><body><div id=bar><span>Bevel OS &middot; <span id=st>connecting</span> &middot; "
-"click the screen to type into it</span><span class=grow></span><button onclick=\"window.open('/files')\">Files</button>"
+"click the screen to type into it</span><span class=grow></span><button onclick=\"location.href='/files'\">Files</button>"
 "<button id=shot>Save screenshot</button></div>"
 "<canvas id=s tabindex=0></canvas><script>\n"
 "const c=document.getElementById('s'),g=c.getContext('2d'),st=document.getElementById('st');\n"

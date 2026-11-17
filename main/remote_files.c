@@ -6,14 +6,19 @@
 //                                        {"name", "dir", "size"}]}, folders first
 //   GET  /fs/get?path=/disk/a.txt        the file, as a download
 //   POST /fs/put?path=/disk/Music&name=x the request body becomes the file x in that folder
+//   POST /fs/delete?path=...             a file, or a folder with everything in it
+//   POST /fs/rename?path=...&name=y      renamed within its folder
+//   POST /fs/mkdir?path=dir&name=y       a new folder
 //
-// Only paths under /disk are served: the drive, and the SD card at /disk/SD. An upload goes to
+// Only paths under /disk are served: the drive, and the SD card at /disk/SD (which, like /disk itself,
+// cannot be deleted or renamed). An upload goes to
 // "name.part" first and replaces "name" only once it is complete, so a dropped connection leaves the
 // old file (or nothing) behind, never half a file.
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <strings.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include "esp_http_server.h"
@@ -45,12 +50,18 @@ static const char s_files_page[] =
 "#drop.over{border-color:#9cf;color:#9cf}"
 "#jobs div{display:flex;gap:10px;align-items:center;margin:4px 0}#jobs progress{flex:1}"
 "#jobs .err{color:#f88}#free{color:#888;margin-left:auto}"
-"</style></head><body><main><h1>Bevel OS files</h1>"
+"#top{display:flex;gap:8px;align-items:center;margin-bottom:12px}#top h1{margin:0;flex:1}"
+"button.act{font:inherit;font-size:12px;color:#ccc;background:#2c2c2c;border:1px solid #444;border-radius:3px;"
+"padding:1px 7px;cursor:pointer;margin-left:4px}button.act:hover{background:#444}button.del:hover{background:#633}"
+"#top button{font:inherit;color:#ddd;background:#333;border:1px solid #555;border-radius:3px;padding:3px 10px;cursor:pointer}"
+"#top button:hover{background:#444}td.a{text-align:right;white-space:nowrap;width:1%}"
+"</style></head><body><main><div id=top><button onclick=\"location.href='/'\">&lsaquo; Screen</button>"
+"<h1>Bevel OS files</h1><button id=mk>New folder</button></div>"
 "<div id=crumbs></div>"
 "<div id=drop>Drop files here to upload them into this folder, or "
 "<label style='color:#9cf;cursor:pointer'><input type=file id=pick multiple hidden>choose files</label>"
 "<div id=jobs></div></div>"
-"<table><thead><tr><th>Name</th><th style='text-align:right'>Size</th></tr></thead><tbody id=list></tbody></table>"
+"<table><thead><tr><th>Name</th><th style='text-align:right'>Size</th><th></th></tr></thead><tbody id=list></tbody></table>"
 "</main><script>\n"
 "let cur='/disk';const $=id=>document.getElementById(id);\n"
 "const esc=s=>s.replace(/[&<>\"']/g,c=>'&#'+c.charCodeAt(0)+';');\n"
@@ -63,12 +74,23 @@ static const char s_files_page[] =
 " const parts=cur.split('/').slice(2);let h='<button data-p=\"/disk\">Drive</button>',acc='/disk';\n"
 " for(const q of parts){acc+='/'+q;h+='<span>&rsaquo;</span><button data-p=\"'+esc(acc)+'\">'+esc(q)+'</button>'}\n"
 " h+='<span id=free>'+size(j.free)+' free of '+size(j.total)+'</span>';$('crumbs').innerHTML=h;\n"
-" let rows=cur!='/disk'?'<tr><td><a class=dir href=# data-p=\"'+esc(cur.slice(0,cur.lastIndexOf('/')))+'\">..</a></td><td></td></tr>':'';\n"
-" for(const e of j.items){const p=cur+'/'+e.name;\n"
-"  rows+=e.dir?'<tr><td><a class=dir href=# data-p=\"'+esc(p)+'\">'+esc(e.name)+'/</a></td><td></td></tr>'\n"
-"   :'<tr><td><a href=\"/fs/get?path='+encodeURIComponent(p)+'\" download=\"'+esc(e.name)+'\">'+esc(e.name)+'</a></td><td class=n>'+size(e.size)+'</td></tr>'}\n"
-" $('list').innerHTML=rows||'<tr><td colspan=2 style=color:#888>(empty)</td></tr>'}\n"
-"document.addEventListener('click',e=>{const p=e.target.dataset&&e.target.dataset.p;if(p){e.preventDefault();show(p)}});\n"
+" let rows=cur!='/disk'?'<tr><td><a class=dir href=# data-p=\"'+esc(cur.slice(0,cur.lastIndexOf('/')))+'\">..</a></td><td></td><td></td></tr>':'';\n"
+" for(const e of j.items){const p=cur+'/'+e.name,fixed=p=='/disk/SD';\n"
+"  const act=fixed?'<td></td>':'<td class=a><button class=act data-ren=\"'+esc(p)+'\">Rename</button>'\n"
+"   +'<button class=\"act del\" data-del=\"'+esc(p)+'\" data-dir='+(e.dir?1:0)+'>Delete</button></td>';\n"
+"  rows+=e.dir?'<tr><td><a class=dir href=# data-p=\"'+esc(p)+'\">'+esc(e.name)+'/</a></td><td></td>'+act+'</tr>'\n"
+"   :'<tr><td><a href=\"/fs/get?path='+encodeURIComponent(p)+'\" download=\"'+esc(e.name)+'\">'+esc(e.name)+'</a></td><td class=n>'+size(e.size)+'</td>'+act+'</tr>'}\n"
+" $('list').innerHTML=rows||'<tr><td colspan=3 style=color:#888>(empty)</td></tr>'}\n"
+// delete, rename and new folder: one POST each, then the folder is listed again
+"async function op(url,what){const r=await fetch(url,{method:'POST'});if(!r.ok)alert(what+': '+(await r.text()));show(cur)}\n"
+"const q=(k,v)=>k+'='+encodeURIComponent(v);\n"
+"document.addEventListener('click',e=>{const t=e.target,d=t.dataset||{};\n"
+" if(d.p){e.preventDefault();show(d.p)}\n"
+" else if(d.del){const n=d.del.slice(d.del.lastIndexOf('/')+1);\n"
+"  if(confirm(d.dir=='1'?'Delete the folder \"'+n+'\" and everything in it?':'Delete \"'+n+'\"?'))op('/fs/delete?'+q('path',d.del),'Delete')}\n"
+" else if(d.ren){const o=d.ren.slice(d.ren.lastIndexOf('/')+1),n=prompt('New name:',o);\n"
+"  if(n&&n!=o)op('/fs/rename?'+q('path',d.ren)+'&'+q('name',n),'Rename')}});\n"
+"$('mk').onclick=()=>{const n=prompt('Folder name:','New folder');if(n)op('/fs/mkdir?'+q('path',cur)+'&'+q('name',n),'New folder')};\n"
 // uploads one after another, each with its own progress bar
 "let queue=Promise.resolve();\n"
 "function upload(files){for(const f of files){const row=document.createElement('div'),bar=document.createElement('progress');\n"
@@ -266,6 +288,59 @@ static esp_err_t put_post(httpd_req_t *req)
     return httpd_resp_sendstr(req, "OK");
 }
 
+// ---------------------------------------------------------------- delete, rename, new folder
+
+// The drive and the card's mount point are not files to delete or rename.
+static bool changeable(const char *path)
+{
+    return strcmp(path, DISK_ROOT) && strcmp(path, SD_ROOT);
+}
+
+static esp_err_t delete_post(httpd_req_t *req)
+{
+    char path[256];
+    if (!query(req, "path", path, sizeof(path)) || !safe_path(path) || !changeable(path))
+        return fail(req, "403 Forbidden", "That cannot be deleted.");
+    if (!fs_exists(path)) return fail(req, "404 Not Found", "It is not there any more.");
+    if (!fs_delete(path)) return fail(req, "500 Internal Server Error", "Could not delete it.");
+    ESP_LOGI(TAG, "deleted %s", path);
+    ev_call(refresh_files, NULL);
+    return httpd_resp_sendstr(req, "OK");
+}
+
+static esp_err_t rename_post(httpd_req_t *req)
+{
+    char path[256], name[80], to[340];
+    if (!query(req, "path", path, sizeof(path)) || !safe_path(path) || !changeable(path))
+        return fail(req, "403 Forbidden", "That cannot be renamed.");
+    if (!query(req, "name", name, sizeof(name)) || !fs_valid_name(name) || strlen(name) > 67)
+        return fail(req, "400 Bad Request", "That name is not allowed.");
+    if (!fs_exists(path)) return fail(req, "404 Not Found", "It is not there any more.");
+    int dl = strrchr(path, '/') - path;
+    snprintf(to, sizeof(to), "%.*s/%s", dl, path, name);
+    if (!strcmp(to, path)) return httpd_resp_sendstr(req, "OK");
+    // a change of capitals only is the same file on FAT, and allowed
+    if (fs_exists(to) && strcasecmp(to, path)) return fail(req, "409 Conflict", "Something with that name is already there.");
+    if (rename(path, to) != 0) return fail(req, "500 Internal Server Error", "Could not rename it.");
+    ESP_LOGI(TAG, "renamed %s to %s", path, name);
+    ev_call(refresh_files, NULL);
+    return httpd_resp_sendstr(req, "OK");
+}
+
+static esp_err_t mkdir_post(httpd_req_t *req)
+{
+    char dir[256], name[80], path[340];
+    if (!query(req, "path", dir, sizeof(dir)) || !safe_path(dir) || !fs_is_dir(dir))
+        return fail(req, "403 Forbidden", "Only folders under /disk.");
+    if (!query(req, "name", name, sizeof(name)) || !fs_valid_name(name) || strlen(name) > 67)
+        return fail(req, "400 Bad Request", "That name is not allowed.");
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (fs_exists(path)) return fail(req, "409 Conflict", "Something with that name is already there.");
+    if (mkdir(path, 0777) != 0) return fail(req, "500 Internal Server Error", "Could not create the folder.");
+    ev_call(refresh_files, NULL);
+    return httpd_resp_sendstr(req, "OK");
+}
+
 // ---------------------------------------------------------------- registration
 
 void remote_files_register(httpd_handle_t srv)
@@ -275,6 +350,9 @@ void remote_files_register(httpd_handle_t srv)
         {.uri = "/fs/list", .method = HTTP_GET, .handler = list_get},
         {.uri = "/fs/get", .method = HTTP_GET, .handler = get_get},
         {.uri = "/fs/put", .method = HTTP_POST, .handler = put_post},
+        {.uri = "/fs/delete", .method = HTTP_POST, .handler = delete_post},
+        {.uri = "/fs/rename", .method = HTTP_POST, .handler = rename_post},
+        {.uri = "/fs/mkdir", .method = HTTP_POST, .handler = mkdir_post},
     };
-    for (int i = 0; i < 4; i++) httpd_register_uri_handler(srv, &uris[i]);
+    for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++) httpd_register_uri_handler(srv, &uris[i]);
 }
