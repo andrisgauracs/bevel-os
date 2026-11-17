@@ -228,9 +228,10 @@ its USB-Serial-JTAG port.
 `sdkconfig.defaults` holds what both boards share, and `sdkconfig.defaults.esp32s3` /
 `sdkconfig.defaults.esp32p4` add what differs (PSRAM speed, the console, the partition table, Wi-Fi
 through the C6 on the P4); a preset's `sdkconfig` is generated from those two files the first time
-it is configured. The `sdkconfig` at the top of the tree is the one `idf.py set-target` wrote before
-the presets, and the preset builds do not read it. The `storage` partition is not flashed: the
-firmware formats it on first boot and fills it with the bundled files.
+it is configured, and none is kept in the tree. To change an option for good, put it in one of the
+defaults files; `idf.py --preset <board> menuconfig` only changes that build directory's copy.
+The `storage` partition is not flashed: the firmware formats it on first boot and fills it with the
+bundled files.
 
 The prebuilt apps in `disk/Apps/esp32s3/` and `disk/Apps/esp32p4/` are embedded into the firmware, so
 the build works without building them first. `tools/build_apps.sh esp32s3|esp32p4` and

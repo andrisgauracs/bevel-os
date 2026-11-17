@@ -1,8 +1,9 @@
-# ESP-IDF build output and component-manager downloads. One build directory per board is handy
-# (idf.py -B build-esp32s3 ...); the plain "build" one is what tools/flash.ps1 uses.
+# ESP-IDF build output and component-manager downloads. Each board builds in its own build-<target>
+# directory (CMakePresets.json) with its sdkconfig there; "build" only holds the serial log.
 build/
 build-*/
 managed_components/
+/sdkconfig
 sdkconfig.old
 
 # Doom game data: fetched by tools/fetch_doom.sh, never committed
