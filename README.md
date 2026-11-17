@@ -58,7 +58,7 @@ at 2x, not photos. More in [captures/](captures/), all from the real board.
   every shortcut).
 - Built-in programs: Files, Text Editor, Picture Viewer (BMP, dithered to 64 colours), Terminal,
   Settings, System Information, Tasks, Help, Benchmark, Widget Gallery, Network (Wi-Fi) and
-  Browser.
+  Browser. On the P4 board also Camera (live picture, pictures saved as BMP) and Sound Player.
 - Loadable programs: ELF files in `/disk/Apps`, run in their own task through a 24-function API
   (`apps/bevel.h`). Included: Snake (4.8 KB), Hello, CrashTest and Doom.
 - A crash in an app's own code becomes an error dialog and the desktop keeps running; a hung app

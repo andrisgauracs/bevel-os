@@ -13,7 +13,7 @@
 #define BOARD_HAS_AUDIO       1       // PCM5102 on the JP1 header; the on-board ES8311 is unused
 #define BOARD_HAS_SD          1       // microSD on SDMMC slot 0
 #define BOARD_HAS_ETH         1       // IP101GR PHY on RMII
-#define BOARD_HAS_CAMERA      1       // OV02C10 on the CSI/SCCB side (not driven yet)
+#define BOARD_HAS_CAMERA      1       // OV02C10 on MIPI-CSI, SCCB on the shared I2C bus (app_camera.c)
 #define BOARD_HAS_WIFI_REMOTE 1       // the esp_wifi API is a remote call into the ESP32-C6
 #define BOARD_CONSOLE_USB_JTAG 1      // console, logs and the command channel on the USB-C "USB1" port
 

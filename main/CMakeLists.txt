@@ -13,7 +13,7 @@ else()
     # Guition JC1060P470-V2: MIPI-DSI panel, capacitive touch, camera connector, wired Ethernet,
     # microSD on the second SDMMC slot
     set(BOARD_SRCS "display_dsi.c" "touch.c" "app_camera.c")
-    set(BOARD_REQUIRES esp_driver_ledc esp_driver_sdmmc sdmmc esp_mm esp_eth riscv)
+    set(BOARD_REQUIRES esp_driver_ledc esp_driver_sdmmc sdmmc esp_mm esp_eth riscv espressif__esp_video)
     set(APP_DIR "../disk/Apps/esp32p4")
 endif()
 

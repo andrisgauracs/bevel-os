@@ -29,3 +29,8 @@ dependencies:
     version: ^3.0.0
     rules:
       - if: target == esp32p4
+  # camera: the V4L2-style video framework with the ISP pipeline and the OV02C10 sensor driver
+  espressif/esp_video:
+    version: ^2.6.0
+    rules:
+      - if: target == esp32p4
