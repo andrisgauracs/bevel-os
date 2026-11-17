@@ -184,7 +184,10 @@ static void set_destroy(window_t *w) { s_set = NULL; }
 void app_settings(const char *arg)
 {
     if (s_set) { wm_activate(s_set); return; }
-    window_t *w = wm_create("Settings", 640, 334, WIN_DIALOG);
+    // the groups end at x = 630: on the S3's 640-pixel screen the client area is 632 wide, so the
+    // frame fits the screen exactly instead of hanging 8 pixels off its right edge
+    int sw = SCREEN_W - 2 * BORDER_W < 640 ? SCREEN_W - 2 * BORDER_W : 640;
+    window_t *w = wm_create("Settings", sw, 334, WIN_DIALOG);
     w->icon = &icon16_settings;
     s_set = w;
     s_sd.old_color = shell_desktop_color; s_sd.old_speed = input_mouse_speed;
