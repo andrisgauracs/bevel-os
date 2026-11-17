@@ -245,6 +245,10 @@ python3 tools/bv.py put local.txt /disk/Documents/local.txt   # copy a file to t
 python3 tools/bv.py quit                             # release the port before flashing
 ```
 
+A session that may not start a background process or listen on a port (a sandboxed one, for example)
+can use `direct`, `directdump` and `directput` instead: the same three jobs, with the port opened and
+closed by each call instead of by the daemon. Only one of the two may hold the port at a time.
+
 `tools/flash.sh`, `tools/build.sh`, `tools/fetch_doom.sh` and the test scripts came from the Mac the
 S3 machine was developed on (zsh, ESP-IDF sourced from `~/esp/esp-idf`, BSD `stat -f`); on Linux,
 adjust those. On Windows the build-flash-monitor loop is `tools\flash.ps1`, and the two app build
@@ -268,10 +272,12 @@ building and writes them to the drive on the next boot. Run an app from Files, t
 
 Doom is a loadable app built from [doomgeneric](https://github.com/ozkl/doomgeneric) (GPL v2,
 included in `third_party/doomgeneric/`) and the platform layer `apps/doom/doom_bevel.c`. It
-renders 320x200 in 256 colours and is shown at 640x400. On the S3 board each game pixel becomes
-a 2x2 block dithered into the 64-colour palette, keyboard only, no sound (that board has no audio
-output); on the P4 board the game's own palette goes straight into the window's true-colour layer
-and the sound effects go to the OS mixer - which nobody has heard on that board yet.
+renders 320x200 in 256 colours and is shown at 640x400. On the P4 board the game's own palette goes
+straight into the window's true-colour layer and the sound effects go to the OS mixer; that has been
+seen running there (title page and E1M1), nobody has heard its sound effects yet. The S3 board has
+no true-colour layer, so the current source tells the player that and quits; `disk/Apps/esp32s3/Doom.elf`
+is the older build, which dithers the 640x400 picture into the 64-colour palette. The S3 build of
+`Doom.elf` does not link at the moment (see the port notes).
 
 `Doom.elf` is already in `disk/Apps/esp32s3/` and `disk/Apps/esp32p4/`, and in both firmwares. The
 game data is not in this repository. `tools/fetch_doom.sh` downloads the shareware `doom1.wad` v1.9
