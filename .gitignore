@@ -18,3 +18,7 @@ tools/assets/out/
 .DS_Store
 __pycache__/
 *.pyc
+
+# Editor setup the ESP-IDF extension writes per machine (toolchain paths, COM port, clangd)
+.vscode/settings.json
+.clangd
