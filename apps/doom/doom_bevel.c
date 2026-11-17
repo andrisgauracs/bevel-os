@@ -231,7 +231,12 @@ int app_main(const bevel_api_t *api, const char *arg)
     if (os->version < 2) { os->msgbox("Doom", "This build of Doom needs a newer Bevel OS.", BV_MB_OK); return 1; }
     // the game data: on the drive, or on the SD card
     static const char *const places[] = {"/disk/Apps/doom1.wad", "/disk/SD/doom1.wad", "/disk/SD/Apps/doom1.wad", "/disk/SD/DOOM1.WAD"};
+    // the zone heap: 8 MB on the P4 (32 MB of PSRAM), 4 MB on the S3, which has 6 MB free in all
+#if BV_ARCH_RISCV
     static char *argv[] = {"doom", "-iwad", NULL, "-mb", "8", NULL};
+#else
+    static char *argv[] = {"doom", "-iwad", NULL, "-mb", "4", NULL};
+#endif
     for (int i = 0; i < 4 && !argv[2]; i++) {
         FILE *f = fopen(places[i], "rb");
         if (f) { fclose(f); argv[2] = (char *)places[i]; }
