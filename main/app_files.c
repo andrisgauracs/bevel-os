@@ -35,6 +35,32 @@ const char *fs_basename(const char *path)
 bool fs_exists(const char *path) { struct stat st; return stat(path, &st) == 0; }
 bool fs_is_dir(const char *path) { struct stat st; return stat(path, &st) == 0 && S_ISDIR(st.st_mode); }
 
+bool fs_exists_exact(const char *path)
+{
+    int rl = strlen(DISK_ROOT);
+    if (strncmp(path, DISK_ROOT, rl) || (path[rl] && path[rl] != '/')) return fs_exists(path);
+    char dir[300];
+    strlcpy(dir, DISK_ROOT, sizeof(dir));
+    const char *p = path + rl;
+    while (*p == '/') p++;
+    while (*p) {
+        const char *e = strchr(p, '/');
+        int n = e ? (int)(e - p) : (int)strlen(p);
+        DIR *d = opendir(dir);
+        if (!d) return false;
+        bool found = false;
+        for (struct dirent *de; !found && (de = readdir(d)) != NULL;)
+            found = (int)strlen(de->d_name) == n && !strncmp(de->d_name, p, n);
+        closedir(d);
+        if (!found) return false;
+        int dl = strlen(dir);
+        snprintf(dir + dl, sizeof(dir) - dl, "/%.*s", n, p);
+        p += n;
+        while (*p == '/') p++;
+    }
+    return true;
+}
+
 static int ent_cmp(const void *a, const void *b)
 {
     const fs_entry_t *x = a, *y = b;

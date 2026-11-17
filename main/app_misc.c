@@ -558,6 +558,19 @@ static void term_path(term_t *t, const char *arg, char *out, int n)
 
 static const char *term_show(const char *path) { return path[strlen(DISK_ROOT)] ? path + strlen(DISK_ROOT) : "/"; }
 
+// Names are taken as typed: "sd" is not "SD". FAT would find either, and for the card's mount point
+// that means a different, empty folder on the drive, so every lookup checks the exact spelling.
+static bool term_dir(const char *p) { return fs_is_dir(p) && fs_exists_exact(p); }
+static bool term_exists(const char *p) { return fs_exists_exact(p); }
+static bool term_parent_ok(const char *p)
+{
+    char d[300];
+    strlcpy(d, p, sizeof(d));
+    char *s = strrchr(d, '/');
+    if (s && s > d) *s = 0;
+    return term_dir(d);
+}
+
 static void term_exec(term_t *t, char *line)
 {
     char *argv[4] = {0};
@@ -585,7 +598,14 @@ static void term_exec(term_t *t, char *line)
     } else if (!strcmp(c, "ls") || !strcmp(c, "dir")) {
         term_path(t, argv[1], a, sizeof(a));
         fs_entry_t *list;
-        int n = fs_list(a, &list);
+        if (!term_dir(a) && term_exists(a)) {          // a file: its own line
+            struct stat st;
+            char sz[24] = "?";
+            if (stat(a, &st) == 0) os_fmt_size(sz, sizeof(sz), st.st_size);
+            term_printf(t, "%12s  %s\n", sz, fs_basename(a));
+            return;
+        }
+        int n = term_dir(a) ? fs_list(a, &list) : -1;
         if (n < 0) { term_printf(t, "ls: no such folder: %s\n", argv[1] ? argv[1] : ""); return; }
         for (int i = 0; i < n; i++) {
             char sz[24] = "<folder>";
@@ -596,14 +616,14 @@ static void term_exec(term_t *t, char *line)
         free(list);
     } else if (!strcmp(c, "cd")) {
         term_path(t, argv[1] ? argv[1] : "/", a, sizeof(a));
-        if (fs_is_dir(a)) strlcpy(t->cwd, a, sizeof(t->cwd)); else term_printf(t, "cd: no such folder: %s\n", argv[1]);
+        if (term_dir(a)) strlcpy(t->cwd, a, sizeof(t->cwd)); else term_printf(t, "cd: no such folder: %s\n", argv[1]);
     } else if (!strcmp(c, "pwd")) {
         term_printf(t, "%s\n", term_show(t->cwd));
     } else if (!strcmp(c, "cat") || !strcmp(c, "type")) {
         if (!argv[1]) { term_puts(t, "cat: which file?\n"); return; }
         term_path(t, argv[1], a, sizeof(a));
         int n;
-        char *s = fs_is_dir(a) ? NULL : fs_read_all(a, &n);
+        char *s = fs_is_dir(a) || !term_exists(a) ? NULL : fs_read_all(a, &n);
         if (!s) { term_printf(t, "cat: cannot read %s\n", argv[1]); return; }
         if (n > 16000) { s[16000] = 0; }
         for (int i = 0; s[i]; i++) if ((unsigned char)s[i] < 32 && s[i] != '\n' && s[i] != '\t' && s[i] != '\r') s[i] = '.';
@@ -613,27 +633,30 @@ static void term_exec(term_t *t, char *line)
     } else if (!strcmp(c, "mkdir")) {
         if (!argv[1]) { term_puts(t, "mkdir: which name?\n"); return; }
         term_path(t, argv[1], a, sizeof(a));
-        if (mkdir(a, 0777) != 0) term_printf(t, "mkdir: cannot create %s\n", argv[1]);
+        if (!term_parent_ok(a)) term_printf(t, "mkdir: no such folder: %s\n", argv[1]);
+        else if (mkdir(a, 0777) != 0) term_printf(t, "mkdir: cannot create %s\n", argv[1]);
     } else if (!strcmp(c, "rm") || !strcmp(c, "del") || !strcmp(c, "rmdir")) {
         if (!argv[1]) { term_puts(t, "rm: which name?\n"); return; }
         term_path(t, argv[1], a, sizeof(a));
-        if (!strcmp(a, DISK_ROOT) || !fs_exists(a)) term_printf(t, "rm: no such file: %s\n", argv[1]);
+        if (!strcmp(a, DISK_ROOT) || !term_exists(a)) term_printf(t, "rm: no such file: %s\n", argv[1]);
         else if (!fs_delete(a)) term_printf(t, "rm: cannot delete %s\n", argv[1]);
     } else if (!strcmp(c, "cp") || !strcmp(c, "mv")) {
         if (!argv[1] || !argv[2]) { term_printf(t, "%s: needs a source and a destination\n", c); return; }
         term_path(t, argv[1], a, sizeof(a));
         term_path(t, argv[2], b, sizeof(b));
-        if (fs_is_dir(b)) { char tmp[300]; fs_join(tmp, sizeof(tmp), b, fs_basename(a)); strlcpy(b, tmp, sizeof(b)); }
-        if (!fs_exists(a)) term_printf(t, "%s: no such file: %s\n", c, argv[1]);
+        if (term_dir(b)) { char tmp[300]; fs_join(tmp, sizeof(tmp), b, fs_basename(a)); strlcpy(b, tmp, sizeof(b)); }
+        if (!term_exists(a)) term_printf(t, "%s: no such file: %s\n", c, argv[1]);
+        else if (!term_parent_ok(b)) term_printf(t, "%s: no such folder: %s\n", c, argv[2]);
         else if (c[0] == 'c' ? !fs_copy(a, b) : rename(a, b) != 0) term_printf(t, "%s: failed\n", c);
     } else if (!strcmp(c, "edit")) {
         term_path(t, argv[1], a, sizeof(a));
+        if (argv[1] && !term_parent_ok(a)) { term_printf(t, "edit: no such folder: %s\n", argv[1]); return; }
         app_editor(argv[1] ? a : NULL);
     } else if (!strcmp(c, "open") || !strcmp(c, "run")) {
         if (!argv[1]) { term_printf(t, "%s: which file?\n", c); return; }
         term_path(t, argv[1], a, sizeof(a));
-        if (!fs_exists(a) && c[0] == 'r') { snprintf(b, sizeof(b), DISK_ROOT "/Apps/%s", argv[1]); strlcpy(a, b, sizeof(a)); if (!fs_exists(a)) strlcat(a, ".elf", sizeof(a)); }
-        if (!fs_exists(a)) term_printf(t, "%s: no such file: %s\n", c, argv[1]);
+        if (!term_exists(a) && c[0] == 'r') { snprintf(b, sizeof(b), DISK_ROOT "/Apps/%s", argv[1]); strlcpy(a, b, sizeof(a)); if (!term_exists(a)) strlcat(a, ".elf", sizeof(a)); }
+        if (!term_exists(a)) term_printf(t, "%s: no such file: %s\n", c, argv[1]);
         else if (fs_is_dir(a)) app_files(a);
         else os_open_file(t->win, a);
     } else if (!strcmp(c, "echo")) {
@@ -696,6 +719,80 @@ static void term_paint(widget_t *w, gfx_t *g)
     }
 }
 
+static const char *const s_term_cmds[] = {
+    "cat", "cd", "clear", "cls", "cp", "del", "df", "dir", "echo", "edit", "exit", "help", "ls", "mem",
+    "mkdir", "mv", "open", "pwd", "rm", "rmdir", "run", "type", "uptime", "ver",
+};
+
+// Tab completes the word at the end of the line: a command for the first word, a file or folder
+// name after it (spelt exactly, like everything else here). One match is filled in, with "/" after a
+// folder; several are filled in as far as they agree, and if that adds nothing they are listed. A
+// name with a space gets an opening quote, closed once a file is complete.
+static void term_complete(term_t *t)
+{
+    t->input[t->ilen] = 0;
+    int start = 0;
+    bool quoted = false, first = true;
+    for (int i = 0; i < t->ilen; i++) {
+        if (t->input[i] == '"') { quoted = !quoted; if (quoted) start = i; }
+        else if (t->input[i] == ' ' && !quoted) start = i + 1;
+    }
+    for (int i = 0; i < start; i++) if (t->input[i] != ' ') { first = false; break; }
+    const char *word = t->input + start + (t->input[start] == '"');
+    const char *slash = strrchr(word, '/');
+    int dlen = slash ? (int)(slash - word) + 1 : 0;           // "Music/Live/" part, kept as typed
+    const char *prefix = word + dlen;
+    int plen = strlen(prefix);
+
+    enum { MAXM = 64 };
+    const char *match[MAXM];
+    bool isdir[MAXM];
+    int nm = 0;
+    fs_entry_t *ents = NULL;
+    if (first && !quoted) {
+        for (int i = 0; i < (int)(sizeof(s_term_cmds) / sizeof(s_term_cmds[0])) && nm < MAXM; i++)
+            if (!strncmp(s_term_cmds[i], prefix, plen)) { match[nm] = s_term_cmds[i]; isdir[nm++] = false; }
+    } else {
+        char dpart[160], dir[300];
+        snprintf(dpart, sizeof(dpart), "%.*s", dlen, word);
+        term_path(t, dpart, dir, sizeof(dir));
+        int n = term_dir(dir) ? fs_list(dir, &ents) : -1;
+        for (int i = 0; i < n && nm < MAXM; i++)
+            if (!strncmp(ents[i].name, prefix, plen)) { match[nm] = ents[i].name; isdir[nm++] = ents[i].is_dir; }
+    }
+    if (nm) {
+        // as far as all the matches agree
+        int common = strlen(match[0]);
+        for (int i = 1; i < nm; i++) {
+            int k = 0;
+            while (k < common && match[i][k] == match[0][k]) k++;
+            common = k;
+        }
+        if (common > plen || nm == 1) {
+            char out[sizeof(t->input)];
+            bool space = memchr(match[0], ' ', common) != NULL || strchr(word, ' ');
+            bool open_q = quoted || space;
+            snprintf(out, sizeof(out), "%.*s%s%.*s%.*s%s", start, t->input, open_q ? "\"" : "", dlen, word,
+                     common, match[0],
+                     nm > 1 ? "" : isdir[0] ? "/" : open_q ? "\" " : " ");
+            strlcpy(t->input, out, sizeof(t->input));
+            t->ilen = strlen(t->input);
+        } else {
+            term_printf(t, "%s> %s\n", term_show(t->cwd), t->input);
+            int col = 0;
+            for (int i = 0; i < nm; i++) {
+                int len = strlen(match[i]) + (isdir[i] ? 1 : 0);
+                if (col && col + len + 2 > T_COLS) { term_puts(t, "\n"); col = 0; }
+                term_printf(t, "%s%s%s", col ? "  " : "", match[i], isdir[i] ? "/" : "");
+                col += len + (col ? 2 : 0);
+            }
+            term_puts(t, "\n");
+        }
+    }
+    free(ents);
+    t->scroll = 0;
+}
+
 static bool term_key(widget_t *w, const event_t *e)
 {
     term_t *t = w->win->user;
@@ -727,6 +824,7 @@ static bool term_key(widget_t *w, const event_t *e)
     case K_PGUP: t->scroll += 10; if (t->scroll > t->count - 5) t->scroll = t->count > 5 ? t->count - 5 : 0; break;
     case K_PGDN: t->scroll -= 10; if (t->scroll < 0) t->scroll = 0; break;
     case K_ESC: t->ilen = 0; break;
+    case K_TAB: if (e->mods & MOD_SHIFT) return false; term_complete(t); break;
     default:
         if (e->chs[0]) {
             int need = (int)strlen(e->chs);
@@ -770,7 +868,7 @@ void app_terminal(const char *arg)
     w->user = t;
     t->win = w;
     t->canvas = ui_canvas(w, 0, 0, T_COLS * 8 + 8, T_ROWS * 16 + 4, &term_ops, true);
-    t->canvas->flags |= WF_WANT_CHARS | WF_WANT_ENTER | WF_WANT_ESC | WF_CARET;
+    t->canvas->flags |= WF_WANT_CHARS | WF_WANT_ENTER | WF_WANT_ESC | WF_WANT_TAB | WF_CARET;
     t->canvas->flags &= ~WF_WANT_KEYUP;
     w->on_resize = term_resize;
     w->on_destroy = term_destroy;
