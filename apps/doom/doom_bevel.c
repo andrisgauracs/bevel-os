@@ -30,15 +30,15 @@ void bevel_exit(void);
 
 void DG_Init(void)
 {
-    // The game is shown in the window's true-colour layer, so a board without one (the VGA devkit)
-    // cannot run it at all: say that before opening a window.
+    // The canvas has to exist before the true-colour layer for it can be allocated, so the window
+    // comes first. A board without such a layer (the VGA devkit) gets the message instead, and
+    // closing the app closes the window again.
+    if (os->win_open("Doom", DOOMGENERIC_RESX * 2, DOOMGENERIC_RESY * 2) != 0) bevel_exit();
     s_px = os->canvas16(&s_cw, &s_ch);
-    if (!s_px || s_cw < 640 || s_ch < 400) {
-        os->msg("Doom", "This program needs a true-colour display, which this board does not have.", BV_MB_OK);
+    if (!s_px || s_cw != DOOMGENERIC_RESX * 2 || s_ch != DOOMGENERIC_RESY * 2) {
+        os->msgbox("Doom", "This program needs a true-colour display, which this board does not have.", BV_MB_OK);
         bevel_exit();
-        return;
     }
-    if (os->win_open("Doom", 640, 400) != 0) bevel_exit();
 }
 
 void DG_DrawFrame(void)
@@ -47,11 +47,12 @@ void DG_DrawFrame(void)
         for (int i = 0; i < 256; i++) s_lut[i] = BV_RGB565(colors[i].r, colors[i].g, colors[i].b);
         palette_changed = 0;
     }
+    // every game pixel becomes a 2x2 block of RGB565, so the 320x200 frame exactly fills the layer
     const uint8_t *src = (const uint8_t *)DG_ScreenBuffer;
-    for (int y = 0; y < 200; y++, src += 320) {
+    for (int y = 0; y < DOOMGENERIC_RESY; y++, src += DOOMGENERIC_RESX) {
         uint16_t *d = s_px + (y * 2) * s_cw;
-        for (int x = 0; x < 320; x++) { uint16_t c = s_lut[src[x]]; d[x * 2] = c; d[x * 2 + 1] = c; }
-        memcpy(d + s_cw, d, 640 * sizeof(uint16_t));
+        for (int x = 0; x < DOOMGENERIC_RESX; x++) { uint16_t c = s_lut[src[x]]; d[x * 2] = c; d[x * 2 + 1] = c; }
+        memcpy(d + s_cw, d, DOOMGENERIC_RESX * 2 * sizeof(uint16_t));
     }
     os->flush16();
 }
