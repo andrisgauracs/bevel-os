@@ -49,12 +49,14 @@ static const char *TAG = "camera";
 #define VIEW_W    644     // half of 1288x728
 #define VIEW_H    364
 #define MAX_MODES 4
+#define MAX_SIZES 12      // picture sizes offered: each sensor mode, halved and quartered
 #define CAM_PRIO  2       // below the web server (3), USB, touch and the drive
 
 typedef struct {
     window_t *win;
     widget_t *view, *status, *mirror, *res, *shot_btn;
     int fd, fw, fh, ov, timer;
+    int div;                        // the saved picture is the frame shrunk by this (1, 2 or 4)
     uint8_t *buf[NBUF];
     TaskHandle_t task;
     SemaphoreHandle_t done;
@@ -70,8 +72,14 @@ typedef struct {
 
 // the sensor's modes, as esp_video lists them (the same for every window, so kept across them)
 static esp_cam_sensor_format_t s_modes[MAX_MODES];
-static char s_mode_label[MAX_MODES][24];
 static int s_nmodes, s_mode = -1;
+
+// The picture sizes in the drop-down, largest first. The sensor has only its own modes; a smaller
+// size is one of them shrunk by 2 or 4 when the picture is saved (each pixel the average of the block
+// it covers), so the preview and the frame rate are those of the mode it comes from.
+typedef struct { int mode, div; char label[24]; } pic_size_t;
+static pic_size_t s_sizes[MAX_SIZES];
+static int s_nsizes, s_size = -1;
 
 static cam_t *s_cam;                // one Camera window at a time
 static bool s_video_ready;
@@ -116,6 +124,23 @@ static bool write_bmp(const char *path, const uint16_t *px, int w, int h)
     return ok;
 }
 
+// Shrinks a picture by div in place: each new pixel is the average of a div x div block. Writing
+// row by row from the top never overtakes the rows still to be read.
+static void shrink(uint16_t *px, int w, int h, int div)
+{
+    int ow = w / div, oh = h / div, n = div * div;
+    for (int y = 0; y < oh; y++) {
+        for (int x = 0; x < ow; x++) {
+            uint32_t r = 0, g = 0, b = 0;
+            for (int j = 0; j < div; j++) {
+                const uint16_t *s = px + (size_t)(y * div + j) * w + x * div;
+                for (int i = 0; i < div; i++) { uint16_t p = s[i]; r += p >> 11; g += (p >> 5) & 63; b += p & 31; }
+            }
+            px[(size_t)y * ow + x] = (uint16_t)(((r / n) << 11) | ((g / n) << 5) | (b / n));
+        }
+    }
+}
+
 // On the SD card if there is one (a picture is 2.7 or 6.2 MB), otherwise on the drive; named by the
 // clock, or numbered while the clock is not set.
 static void save_picture(cam_t *c)
@@ -125,7 +150,8 @@ static void save_picture(cam_t *c)
     snprintf(dir, sizeof(dir), "%s/Pictures", sd ? SD_ROOT : DISK_ROOT);
     if (!fs_is_dir(dir)) mkdir(dir, 0777);
     uint64_t total = 0, free_b = 0;
-    uint32_t need = 54 + (uint32_t)c->fw * c->fh * 3 + 65536;
+    int w = c->fw / c->div, h = c->fh / c->div;
+    uint32_t need = 54 + (uint32_t)w * h * 3 + 65536;
     if (storage_df_path(dir, &total, &free_b) && free_b < need) {
         snprintf(s_saved_msg, sizeof(s_saved_msg), "Not saved: %s is full.", sd ? "the SD card" : "the drive");
         return;
@@ -138,7 +164,8 @@ static void save_picture(cam_t *c)
                  t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
     for (int i = 1; !path[0] || fs_exists(path); i++) snprintf(path, sizeof(path), "%s/Photo %04d.bmp", dir, i);
     uint32_t t0 = os_uptime_ms();
-    if (write_bmp(path, c->shot, c->fw, c->fh)) {
+    if (c->div > 1) shrink(c->shot, c->fw, c->fh, c->div);
+    if (write_bmp(path, c->shot, w, h)) {
         snprintf(s_saved_msg, sizeof(s_saved_msg), "Saved %s", path + strlen(DISK_ROOT));
         ESP_LOGI(TAG, "saved %s in %u ms", path, (unsigned)(os_uptime_ms() - t0));
     } else {
@@ -250,14 +277,27 @@ static void list_modes(int fd)
     for (int i = 0; s_nmodes < MAX_MODES; i++) {
         struct v4l2_sensor_format_enum e = {.index = i};
         if (ioctl(fd, VIDIOC_ENUM_SENSOR_FMT, &e) != 0) break;
-        s_modes[s_nmodes] = e.format;
-        snprintf(s_mode_label[s_nmodes], sizeof(s_mode_label[0]), "%u x %u", e.format.width, e.format.height);
-        s_nmodes++;
+        s_modes[s_nmodes++] = e.format;
     }
+    // every mode as it is, halved and quartered, largest first, nothing narrower than 300 pixels
+    static const int divs[] = {1, 2, 4};
+    for (int d = 0; d < 3; d++)
+        for (int m = 0; m < s_nmodes && s_nsizes < MAX_SIZES; m++) {
+            int w = s_modes[m].width / divs[d], h = s_modes[m].height / divs[d];
+            if (w < 300) continue;
+            s_sizes[s_nsizes] = (pic_size_t){m, divs[d], ""};
+            snprintf(s_sizes[s_nsizes].label, sizeof(s_sizes[0].label), "%d x %d", w, h);
+            s_nsizes++;
+        }
+    for (int i = 1; i < s_nsizes; i++)        // by width, largest first
+        for (int j = i; j > 0 && s_modes[s_sizes[j].mode].width / s_sizes[j].div > s_modes[s_sizes[j - 1].mode].width / s_sizes[j - 1].div; j--) {
+            pic_size_t t = s_sizes[j]; s_sizes[j] = s_sizes[j - 1]; s_sizes[j - 1] = t;
+        }
     esp_cam_sensor_format_t cur = {0};
     if (ioctl(fd, VIDIOC_G_SENSOR_FMT, &cur) == 0)
         for (int i = 0; i < s_nmodes; i++) if (s_modes[i].width == cur.width && s_modes[i].height == cur.height) s_mode = i;
     if (s_mode < 0 && s_nmodes) s_mode = 0;
+    for (int i = 0; i < s_nsizes; i++) if (s_sizes[i].mode == s_mode && s_sizes[i].div == 1) s_size = i;
 }
 
 static bool cam_start(cam_t *c)
@@ -369,7 +409,7 @@ static void show_state(cam_t *c, bool ok)
 {
     ui_enable(c->shot_btn, ok);
     ui_enable(c->mirror, ok);
-    ui_enable(c->res, s_nmodes > 1);
+    ui_enable(c->res, s_nsizes > 1);
     if (!ok) { ESP_LOGW(TAG, "%s", c->error); ui_set_text(c->status, ""); }
     ui_invalidate(c->view);
 }
@@ -384,7 +424,8 @@ static void restart(cam_t *c)
     bool ok = cam_start(c);
     wm_busy(false);
     if (!ok) cam_stop(c, true);
-    if (s_nmodes) { ui_dropdown_set_count(c->res, s_nmodes); ui_dropdown_select(c->res, s_mode); }
+    if (s_nsizes) { ui_dropdown_set_count(c->res, s_nsizes); ui_dropdown_select(c->res, s_size); }
+    c->div = s_size >= 0 ? s_sizes[s_size].div : 1;
     show_state(c, ok);
 }
 
@@ -404,16 +445,18 @@ static void mirror_changed(widget_t *b, int code)
     c->mirror_on = ui_checked(b);
 }
 
-static void modes_get(widget_t *dd, int i, lv_item_t *it) { it->text = i < s_nmodes ? s_mode_label[i] : ""; }
+static void sizes_get(widget_t *dd, int i, lv_item_t *it) { it->text = i < s_nsizes ? s_sizes[i].label : ""; }
 
+// A size from the same sensor mode only changes how pictures are saved; another mode restarts the camera.
 static void res_changed(widget_t *dd, int code)
 {
     cam_t *c = dd->win->user;
-    int m = ui_dropdown_sel(dd);
-    if (code != UI_SELECT || m < 0 || m == s_mode || c->saving) return;
-    s_mode = m;
+    int k = ui_dropdown_sel(dd);
+    if (code != UI_SELECT || k < 0 || k >= s_nsizes || k == s_size || c->saving) return;
+    s_size = k;
     s_saved_msg[0] = 0;
-    restart(c);
+    c->div = s_sizes[k].div;
+    if (s_sizes[k].mode != s_mode) { s_mode = s_sizes[k].mode; restart(c); }
 }
 
 static void tick(void *arg)
@@ -454,7 +497,7 @@ void app_camera(const char *arg)
     int y = VIEW_H + 18;
     c->view = ui_canvas(w, 8, 8, VIEW_W, VIEW_H, &view_ops, false);
     c->shot_btn = ui_button(w, 8, y, 110, 26, "Take &picture", take_picture);
-    c->res = ui_dropdown(w, 128, y + 2, 112, modes_get);
+    c->res = ui_dropdown(w, 128, y + 2, 112, sizes_get);
     c->res->on_action = res_changed;
     c->mirror = ui_checkbox(w, 252, y + 5, 70, "&Mirror", false);
     c->mirror->on_action = mirror_changed;
