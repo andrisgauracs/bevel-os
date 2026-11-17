@@ -71,6 +71,12 @@ int gfx_text(gfx_t *g, int x, int y, const char *s, int len, int font, uint8_t f
 int gfx_label_w(const char *s, int font);
 int gfx_label(gfx_t *g, int x, int y, const char *s, int font, uint8_t fg, bool underline);
 char gfx_label_mnemonic(const char *s);                                   // lower-case letter or 0
+// walking text by glyph (UTF-8: 1 byte ASCII, 2 bytes for the accents): gfx_glyph returns the
+// row in the font tables plus the bytes the glyph spans; gfx_glyph_back the bytes of the glyph
+// ending just before a caret position
+int gfx_glyph(const char *s, int i, int len, int *bytes);
+int gfx_glyph_back(const char *s, int pos);
+int gfx_glyphs(const char *s, int len);  // number of glyphs in len bytes (len < 0: NUL-terminated)
 
 // Raw kernels. The ESP32-S3 has the PIE SIMD coprocessor (16 bytes per instruction), which is what
 // keeps the wide fills and copies fast enough for the VGA scan-out; the P4 has no such unit.

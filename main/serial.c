@@ -23,6 +23,8 @@
 #include "display.h"
 #include "comp.h"
 #include "input.h"
+#include "layout.h"
+#include "apps.h"
 #include "os.h"
 #include "mbedtls/base64.h"
 
@@ -100,7 +102,7 @@ static const struct { const char *name; uint8_t usage; } s_keynames[] = {
     {"space", K_SPACE}, {"ins", K_INS}, {"home", K_HOME}, {"pgup", K_PGUP}, {"del", K_DEL},
     {"delete", K_DEL}, {"end", K_END}, {"pgdn", K_PGDN}, {"right", K_RIGHT}, {"left", K_LEFT},
     {"down", K_DOWN}, {"up", K_UP}, {"menu", K_MENU}, {"gui", K_LGUI}, {"win", K_LGUI},
-    {"ctrl", K_LCTRL}, {"shift", K_LSHIFT}, {"alt", K_LALT},
+    {"ctrl", K_LCTRL}, {"shift", K_LSHIFT}, {"alt", K_LALT}, {"lalt", K_LALT}, {"ralt", K_RALT},
     {"f1", K_F1}, {"f2", K_F2}, {"f3", K_F3}, {"f4", K_F4}, {"f5", K_F5}, {"f6", K_F6},
     {"f7", K_F7}, {"f8", K_F8}, {"f9", K_F9}, {"f10", K_F10}, {"f11", K_F11}, {"f12", K_F12},
 };
@@ -136,20 +138,35 @@ static bool do_key(char *spec, int mode)
 
 static void do_type(const char *s)
 {
-    for (; *s; s++) {
-        uint8_t u; bool sh;
-        char c = *s;
-        if (c == '\\' && s[1] == 'n') { c = '\n'; s++; }
-        else if (c == '\\' && s[1] == 't') { c = '\t'; s++; }
-        if (!input_char_to_usage(c, &u, &sh)) continue;
-        if (sh) input_key(K_LSHIFT, true);
+    for (int i = 0; s[i]; ) {
+        unsigned char c = (unsigned char)s[i];
+        uint16_t code;
+        int n = 1;
+        if (c >= 0x80) {
+            if ((c & 0xE0) != 0xC0 || !s[i + 1]) { i++; continue; }  // text this board cannot type
+            code = ((c & 0x1F) << 6) | ((unsigned char)s[i + 1] & 0x3F);
+            n = 2;
+        } else {
+            code = c;
+            if (c == '\\' && (s[i + 1] == 'n' || s[i + 1] == 't')) { code = s[i + 1] == 'n' ? '\n' : '\t'; n = 2; }
+        }
+        uint8_t u = 0;
+        int st = 0;
+        if (code == '\n') u = K_ENTER;
+        else if (code == '\t') u = K_TAB;
+        else if (!input_key_find(code, &u, &st)) { i += n; continue; }  // not on this keyboard
+        if (st & 2) input_key(K_RALT, true);
+        if (st & 1) input_key(K_LSHIFT, true);
         input_key(u, true);
         input_key(u, false);
-        if (sh) input_key(K_LSHIFT, false);
+        if (st & 1) input_key(K_LSHIFT, false);
+        if (st & 2) input_key(K_RALT, false);
+        i += n;
         // do not outrun the 64-entry event queue
         ev_call_sync(NULL, NULL);
     }
 }
+
 
 static void settle(void)
 {
@@ -249,6 +266,25 @@ static void handle_line(char *line)
     } else if (!strcmp(line, "putclose")) {
         ok = s_put && fclose(s_put) == 0;
         s_put = NULL;
+    } else if (!strcmp(line, "layout")) {
+        serial_printf("layout: %d %s\n", input_layout_get(), layout_name[input_layout_get()]);
+    } else if (!strcmp(line, "keytext")) {
+        char out[8] = { 0 };
+        char *tok = strtok(arg, "+ ");
+        uint8_t u = key_by_name(tok);
+        if (!u) { ok = false; }
+        else {
+            uint8_t mods = 0;
+            for (tok = strtok(NULL, "+ "); tok; tok = strtok(NULL, "+ ")) {
+                uint8_t m = key_by_name(tok);
+                if (m == K_RALT) mods |= MOD_RALT;  // the state bits key_text reads
+                if (m == K_LSHIFT || m == K_RSHIFT) mods |= MOD_SHIFT;
+            }
+            input_key_text_test(u, mods, out, sizeof out);
+            serial_printf("key %u mod %u: %d bytes", u, mods, (int)strlen(out));
+            for (int i = 0; out[i]; i++) serial_printf(" %02X", (unsigned char)out[i]);
+            serial_printf("\n");
+        }
     } else if (!strcmp(line, "ping")) {
         out("pong\n");
     } else if (!os_serial_command(line, arg)) {

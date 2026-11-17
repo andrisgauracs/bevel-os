@@ -31,6 +31,7 @@ OUT_C = os.path.normpath(os.path.join(HERE, "..", "..", "main", "assets", "asset
 
 FIRST, LAST = 32, 126
 NGLYPH = LAST - FIRST + 1
+MAX_CODE = 255            # glyphs above ASCII (the accents the keyboard layouts type) are allowed
 MONO_W, MONO_H = 8, 16
 UI_H, UI_BASELINE, UI_MAX_W = 12, 9, 15
 TRANSPARENT = 0xFF
@@ -83,8 +84,8 @@ def parse_font(path, height, fixed_width=None, max_width=None):
             if len(parts) != 2:
                 raise AssetError("%s: glyph header must be '@ <char>'" % where)
             code = _glyph_code(parts[1], where)
-            if not FIRST <= code <= LAST:
-                raise AssetError("%s: glyph code %d outside 32..126" % (where, code))
+            if not FIRST <= code <= MAX_CODE:
+                raise AssetError("%s: glyph code %d outside 32..%d" % (where, code, MAX_CODE))
             if code in glyphs:
                 raise AssetError("%s: duplicate glyph %r" % (where, chr(code)))
             cur = glyphs[code] = []
@@ -198,11 +199,21 @@ def load_all():
     """Parse and validate every source. Returns a dict used by the generator and preview."""
     mono_src = parse_font(os.path.join(SRC, "font_mono.txt"), MONO_H, fixed_width=MONO_W)
     ui_src = parse_font(os.path.join(SRC, "font_ui.txt"), UI_H, max_width=UI_MAX_W)
+    # ASCII first (in order, so code-32 is still the index for a plain character), then the
+    # extra glyphs above ASCII sorted by code. font_glyph_index maps a code point to its row
+    # in these tables, so text can hold accents and still find its glyph.
+    order = list(range(FIRST, LAST + 1)) + sorted(c for c in mono_src if c > LAST)
+    if sorted(c for c in ui_src if c > LAST) != order[NGLYPH:]:
+        raise AssetError("the two fonts do not have the same extra glyphs: %s vs %s" % (
+            order[NGLYPH:], sorted(c for c in ui_src if c > LAST)))
+    index = [0xFFFF] * (MAX_CODE + 1)
+    for i, c in enumerate(order):
+        index[c] = i
     mono = []
-    for c in range(FIRST, LAST + 1):
+    for c in order:
         mono.append([sum(0x80 >> x for x, ch in enumerate(r) if ch == "#") for r in mono_src[c]])
     ui_adv, ui_rows = [], []
-    for c in range(FIRST, LAST + 1):
+    for c in order:
         rows = ui_src[c]
         ui_adv.append(len(rows[0]) + 1)
         ui_rows.append([sum(0x8000 >> x for x, ch in enumerate(r) if ch == "#") for r in rows])
@@ -210,10 +221,13 @@ def load_all():
     bitmaps += _load_dir("icons16", "icon16_", ICON16, w=16, h=16)
     bitmaps += _load_dir("icons32", "icon32_", ICON32, w=32, h=32)
     bitmaps += _load_dir("cursors", "cursor_", CURSORS, max_w=CURSOR_MAX_W, max_h=CURSOR_MAX_H)
-    return {"mono": mono, "ui_adv": ui_adv, "ui_rows": ui_rows, "bitmaps": bitmaps}
+    return {"mono": mono, "ui_adv": ui_adv, "ui_rows": ui_rows, "index": index,
+            "order": order, "bitmaps": bitmaps}
 
 
 def _cchar(c):
+    if c > 126:
+        return "0x%02X" % c
     ch = chr(c)
     return {"\\": "backslash", "/": "slash", "*": "asterisk"}.get(ch, ch)
 
@@ -223,19 +237,26 @@ def emit_c(a):
     o.append("// GENERATED FILE - do not edit. Source: tools/assets/src/, generator: tools/assets/gen_assets.py")
     o.append('#include "assets.h"')
     o.append("")
-    o.append("const uint8_t font_mono[%d][%d] = {" % (NGLYPH, MONO_H))
+    n = len(a["order"])
+    o.append("const uint8_t font_mono[%d][%d] = {" % (n, MONO_H))
     for i, rows in enumerate(a["mono"]):
-        o.append("    {%s}, // %s" % (",".join("0x%02X" % v for v in rows), _cchar(FIRST + i)))
+        o.append("    {%s}, // %s" % (",".join("0x%02X" % v for v in rows), _cchar(a["order"][i])))
     o.append("};")
     o.append("")
-    o.append("const uint8_t font_ui_adv[%d] = {" % NGLYPH)
-    for i in range(0, NGLYPH, 16):
+    o.append("const uint8_t font_ui_adv[%d] = {" % n)
+    for i in range(0, n, 16):
         o.append("    %s," % ",".join("%d" % v for v in a["ui_adv"][i:i + 16]))
     o.append("};")
     o.append("")
-    o.append("const uint16_t font_ui_rows[%d][FONT_UI_H] = {" % NGLYPH)
+    o.append("const uint16_t font_ui_rows[%d][FONT_UI_H] = {" % n)
     for i, rows in enumerate(a["ui_rows"]):
-        o.append("    {%s}, // %s" % (",".join("0x%04X" % v for v in rows), _cchar(FIRST + i)))
+        o.append("    {%s}, // %s" % (",".join("0x%04X" % v for v in rows), _cchar(a["order"][i])))
+    o.append("};")
+    o.append("")
+    # code point -> row in the tables above; 0xFFFF = this font has no glyph for it
+    o.append("const uint16_t font_glyph_index[256] = {")
+    for c in range(0, 256, 8):
+        o.append("    %s," % ",".join("%d" % a["index"][c + k] for k in range(8)))
     o.append("};")
     for name, bm in a["bitmaps"]:
         w, h, px = bm["w"], bm["h"], bm["px"]

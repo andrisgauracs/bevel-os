@@ -268,80 +268,133 @@ void IRAM_ATTR gfx_glyph16(gfx_t *g, int x, int y, const uint16_t *rows, int w, 
 
 int gfx_font_h(int font) { return font == FONT_MONO ? 16 : FONT_UI_H; }
 
-static inline int glyph_index(char ch)
+// Text is UTF-8, and the fonts cover ASCII plus the accented letters the keyboard layouts
+// type. One glyph is one byte (ASCII) or two bytes (the accents), so text walks by glyphs:
+// gfx_glyph gives the row of the font tables to draw and how many bytes the glyph is, and
+// gfx_glyph_back how many bytes the glyph before a caret spans, so Backspace deletes a
+// whole accented letter and not half of it.
+int gfx_glyph(const char *s, int i, int len, int *bytes)
 {
-    unsigned c = (unsigned char)ch;
-    return (c < 32 || c > 126) ? '?' - 32 : (int)c - 32;
+    unsigned char c = (unsigned char)s[i];
+    int row;
+    if (c < 0x80) {
+        *bytes = 1;
+        row = font_glyph_index[c];
+    } else if ((c & 0xE0) == 0xC0 && i + 1 < len) {
+        unsigned cp = ((c & 0x1F) << 6) | ((unsigned char)s[i + 1] & 0x3F);
+        *bytes = 2;
+        row = cp <= 255 ? font_glyph_index[cp] : 0xFFFF;
+    } else {
+        *bytes = 1;
+        row = 0xFFFF;
+    }
+    return row == 0xFFFF ? font_glyph_index['?'] : row;
+}
+
+int gfx_glyphs(const char *s, int len)
+{
+    if (len < 0) len = strlen(s);
+    int n = 0;
+    for (int i = 0; i < len;) {
+        int b;
+        gfx_glyph(s, i, len, &b);
+        i += b;
+        n++;
+    }
+    return n;
+}
+
+int gfx_glyph_back(const char *s, int pos)
+{
+    if (pos >= 2 && (s[pos - 2] & 0xC0) == 0xC0) return 2;
+    return 1;
+}
+
+static inline int glyph_adv(int row, int font, bool bold)
+{
+    return (font == FONT_MONO ? 8 : font_ui_adv[row]) + (bold ? 1 : 0);
+}
+
+// draw one glyph at (wx, wy) in the canvas, and return how far the pen moves
+static int glyph_draw(gfx_t *g, int wx, int wy, const char *s, int len, int i, int font,
+                      uint8_t fg, bool bold, bool underline, int *span)
+{
+    int gi = gfx_glyph(s, i, len, span);
+    int adv = glyph_adv(gi, font, bold);
+    int h = gfx_font_h(font);
+    if (wy >= g->cy1 || wy + h <= g->cy0) return adv;
+    int j0 = wy < g->cy0 ? g->cy0 - wy : 0;
+    int j1 = wy + h > g->cy1 ? g->cy1 - wy : h;
+    uint8_t *row0 = g->px + (wy - g->sy) * g->stride;
+    if (font == FONT_MONO) {
+        if (wx + 8 > g->cx0) {
+            const uint8_t *gl = font_mono[gi];
+            for (int j = j0; j < j1; j++) {
+                uint32_t bits = (uint32_t)gl[j] << 8;
+                if (bits) put_bits(g, row0 + j * g->stride, wx, bits, fg);
+            }
+        }
+    } else if (wx < g->cx1 && wx + 16 > g->cx0) {
+        const uint16_t *gl = font_ui_rows[gi];
+        for (int j = j0; j < j1; j++) {
+            uint32_t bits = gl[j];
+            if (bold) bits |= bits >> 1;
+            if (bits) put_bits(g, row0 + j * g->stride, wx, bits, fg);
+        }
+    }
+    if (underline) gfx_hline(g, wx - g->ox, wy - g->oy + (font == FONT_MONO ? 14 : FONT_UI_BASELINE + 2), adv - 1, fg);
+    return adv;
 }
 
 int IRAM_ATTR gfx_text_w(const char *s, int len, int font)
 {
     if (len < 0) len = strlen(s);
-    if (font == FONT_MONO) return len * 8;
+    bool bold = font == FONT_UI_BOLD;
     int w = 0;
-    for (int i = 0; i < len; i++) w += font_ui_adv[glyph_index(s[i])];
-    if (font == FONT_UI_BOLD) w += len;
+    for (int i = 0; i < len;) {
+        int n;
+        w += glyph_adv(gfx_glyph(s, i, len, &n), font, bold);
+        i += n;
+    }
     return w;
 }
 
 int IRAM_ATTR gfx_text(gfx_t *g, int x, int y, const char *s, int len, int font, uint8_t fg)
 {
     if (len < 0) len = strlen(s);
-    int wx = x + g->ox, wy = y + g->oy;
-    int h = gfx_font_h(font);
-    int start = wx;
-    if (wy >= g->cy1 || wy + h <= g->cy0) return gfx_text_w(s, len, font);
-    int j0 = wy < g->cy0 ? g->cy0 - wy : 0;
-    int j1 = wy + h > g->cy1 ? g->cy1 - wy : h;
-    uint8_t *row0 = g->px + (wy - g->sy) * g->stride;
-    if (font == FONT_MONO) {
-        for (int i = 0; i < len; i++, wx += 8) {
-            if (wx >= g->cx1) { wx += (len - i) * 8; break; }
-            if (wx + 8 <= g->cx0) continue;
-            const uint8_t *gl = font_mono[glyph_index(s[i])];
-            for (int j = j0; j < j1; j++) {
-                uint32_t bits = (uint32_t)gl[j] << 8;
-                if (bits) put_bits(g, row0 + j * g->stride, wx, bits, fg);
-            }
-        }
-    } else {
-        bool bold = font == FONT_UI_BOLD;
-        for (int i = 0; i < len; i++) {
-            int gi = glyph_index(s[i]);
-            int adv = font_ui_adv[gi] + (bold ? 1 : 0);
-            if (wx < g->cx1 && wx + 16 > g->cx0) {
-                const uint16_t *gl = font_ui_rows[gi];
-                for (int j = j0; j < j1; j++) {
-                    uint32_t bits = gl[j];
-                    if (bold) bits |= bits >> 1;
-                    if (bits) put_bits(g, row0 + j * g->stride, wx, bits, fg);
-                }
-            }
-            wx += adv;
-        }
+    int wx = x + g->ox, wy = y + g->oy, start = wx;
+    if (wy >= g->cy1 || wy + gfx_font_h(font) <= g->cy0) return gfx_text_w(s, len, font);
+    bool bold = font == FONT_UI_BOLD;
+    for (int i = 0; i < len;) {
+        int n;
+        wx += glyph_draw(g, wx, wy, s, len, i, font, fg, bold, false, &n);
+        i += n;
     }
     return wx - start;
 }
 
 int gfx_label_w(const char *s, int font)
 {
-    int w = 0;
-    for (; *s; s++) {
-        if (*s == '&') { s++; if (!*s) break; }
-        w += gfx_text_w(s, 1, font);
+    int len = strlen(s), w = 0;
+    for (int i = 0; i < len;) {
+        if (s[i] == '&') { i++; if (i >= len) break; }
+        int n;
+        w += glyph_adv(gfx_glyph(s, i, len, &n), font, font == FONT_UI_BOLD);
+        i += n;
     }
     return w;
 }
 
 int gfx_label(gfx_t *g, int x, int y, const char *s, int font, uint8_t fg, bool underline)
 {
-    int x0 = x;
-    for (; *s; s++) {
+    int len = strlen(s), x0 = x;
+    for (int i = 0; i < len;) {
         bool mn = false;
-        if (*s == '&') { s++; if (!*s) break; mn = *s != '&'; }
-        int adv = gfx_text(g, x, y, s, 1, font, fg);
-        if (mn && underline) gfx_hline(g, x, y + (font == FONT_MONO ? 14 : FONT_UI_BASELINE + 2), adv - 1, fg);
-        x += adv;
+        if (s[i] == '&') { i++; if (i >= len) break; mn = s[i] != '&'; }
+        int n;
+        x += glyph_draw(g, x + g->ox, y + g->oy, s, len, i, font, fg, font == FONT_UI_BOLD,
+                        mn && underline, &n);
+        i += n;
     }
     return x - x0;
 }

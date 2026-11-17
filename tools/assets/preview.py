@@ -16,6 +16,7 @@ import gen_assets  # noqa: E402
 
 OUT = os.path.join(HERE, "out")
 CHARSET = "".join(chr(c) for c in range(32, 127))
+WORDS = "Ànaïs - Seúl  España? Ñoño l'après-midi über Zürich, café Crème brûlée"
 PANGRAM = "The quick brown fox jumps over the lazy dog."
 PANGRAM2 = "SPHINX OF BLACK QUARTZ, JUDGE MY VOW! 0123456789"
 SAMPLES = [PANGRAM, PANGRAM2,
@@ -62,7 +63,7 @@ class Canvas:
 
 def draw_mono(cv, a, x, y, text, scale=1, fg=BLACK):
     for ch in text:
-        rows = a["mono"][ord(ch) - 32]
+        rows = a["mono"][a["index"][ord(ch)]]
         for ry, bits in enumerate(rows):
             for rx in range(8):
                 if bits & (0x80 >> rx):
@@ -72,12 +73,12 @@ def draw_mono(cv, a, x, y, text, scale=1, fg=BLACK):
 
 
 def ui_width(a, text, bold=False):
-    return sum(a["ui_adv"][ord(c) - 32] + (1 if bold else 0) for c in text)
+    return sum(a["ui_adv"][a["index"][ord(c)]] + (1 if bold else 0) for c in text)
 
 
 def draw_ui(cv, a, x, y, text, scale=1, fg=BLACK, bold=False):
     for ch in text:
-        i = ord(ch) - 32
+        i = a["index"][ord(ch)]
         for ry, bits in enumerate(a["ui_rows"][i]):
             if bold:
                 bits |= bits >> 1  # the renderer's 1px right smear
@@ -101,26 +102,28 @@ def chunks(s, n):
 
 
 def sec_mono(a):
-    cv = Canvas(1056, 16 * 9 + 48 * 6 + 60)
+    extra = "".join(chr(c) for c in a["order"][gen_assets.NGLYPH:])
+    cv = Canvas(1056, 16 * 9 + 48 * 8 + 60)
     y = 8
-    for line in chunks(CHARSET, 48) + SAMPLES:
+    for line in chunks(CHARSET, 48) + chunks(extra, 48) + [WORDS] + SAMPLES:
         draw_mono(cv, a, 8, y, line)
         y += 16
     cv.rect(0, y + 4, cv.w, 16 * 2 + 8, NAVY)
     draw_mono(cv, a, 8, y + 8, PANGRAM + " " + PANGRAM2[:38], fg=WHITE)
     draw_mono(cv, a, 8, y + 24, "C:\\> dir /w *.txt   [README.TXT]  {a|b} ~user 3<4>=2 x_y `q` it's \"ok\" #1 @ 50%", fg=rgb(0, 3, 0))
     y += 52
-    for line in chunks(CHARSET, 32) + [PANGRAM[:43], PANGRAM2[:43], "0O 1lI| 5S 2Z 8B g9q rn m {[(<>)]} ;:,.'`\"!?"]:
+    for line in chunks(CHARSET, 32) + chunks(extra, 32) + [PANGRAM[:43], PANGRAM2[:43], "0O 1lI| 5S 2Z 8B g9q rn m {[(<>)]} ;:,.'`\"!?"]:
         draw_mono(cv, a, 8, y, line, 3)
         y += 48
     return cv
 
 
 def sec_ui(a):
-    cv = Canvas(1056, 14 * 20 + 40 * 8 + 40)
+    extra = "".join(chr(c) for c in a["order"][gen_assets.NGLYPH:])
+    cv = Canvas(1056, 14 * 20 + 40 * 10 + 40)
     y = 8
     for bold in (False, True):
-        for line in chunks(CHARSET, 48) + UI_SAMPLES:
+        for line in chunks(CHARSET, 48) + chunks(extra, 48) + [WORDS] + UI_SAMPLES:
             draw_ui(cv, a, 8, y, line, bold=bold)
             y += 14
     # on dark title bar + grey button
@@ -130,7 +133,7 @@ def sec_ui(a):
     draw_ui(cv, a, 418, y + 5, "Programs   Settings   Help   Shut Down...")
     y += 26
     for bold in (False, True):
-        for line in chunks(CHARSET, 32):
+        for line in chunks(CHARSET, 32) + chunks(extra, 32):
             draw_ui(cv, a, 8, y, line, 3, bold=bold)
             y += 40
     draw_ui(cv, a, 8, y, PANGRAM, 3)

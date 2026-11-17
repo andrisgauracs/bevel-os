@@ -512,27 +512,38 @@ static bool field_key(widget_t *w, const event_t *e)
     } else {
         switch (e->key) {
         case K_LEFT:
-            if (!shift && s1 > s0) f->cur = s0; else if (f->cur > 0) f->cur--;
+            if (!shift && s1 > s0) f->cur = s0;
+            else if (f->cur > 0) f->cur -= gfx_glyph_back(f->buf, f->cur);  // whole glyph
             if (!shift) f->anchor = f->cur;
             break;
         case K_RIGHT:
-            if (!shift && s1 > s0) f->cur = s1; else if (f->cur < f->len) f->cur++;
+            if (!shift && s1 > s0) f->cur = s1;
+            else if (f->cur < f->len) {
+                int n;
+                gfx_glyph(f->buf, f->cur, f->len, &n);
+                f->cur += n;
+            }
             if (!shift) f->anchor = f->cur;
             break;
         case K_HOME: f->cur = 0; if (!shift) f->anchor = 0; break;
         case K_END: f->cur = f->len; if (!shift) f->anchor = f->cur; break;
         case K_BKSP:
             if (s1 > s0) field_delete_sel(f);
-            else if (f->cur > 0) { f->anchor = f->cur - 1; field_delete_sel(f); }
+            else if (f->cur > 0) { f->anchor = f->cur - gfx_glyph_back(f->buf, f->cur); field_delete_sel(f); }
             changed = true;
             break;
         case K_DEL:
             if (s1 > s0) field_delete_sel(f);
-            else if (f->cur < f->len) { f->anchor = f->cur + 1; field_delete_sel(f); }
+            else if (f->cur < f->len) {
+                int n;
+                gfx_glyph(f->buf, f->cur, f->len, &n);
+                f->anchor = f->cur + n;
+                field_delete_sel(f);
+            }
             changed = true;
             break;
         default:
-            if (e->ch >= 32 && e->ch < 127) { field_insert(f, &e->ch, 1); changed = true; }
+            if (e->chs[0]) { field_insert(f, e->chs, (int)strlen(e->chs)); changed = true; }
             else moved = false;
         }
     }

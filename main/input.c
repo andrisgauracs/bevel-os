@@ -3,6 +3,7 @@
 // GUI task is busy.
 #include <string.h>
 #include "input.h"
+#include "layout.h"
 #include "display.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -26,7 +27,13 @@ int input_mouse_speed = 5;
 int input_repeat_delay = 400;
 int input_repeat_rate = 25;
 
-void input_init(void) { s_q = xQueueCreate(64, sizeof(event_t)); }
+static void input_utf8_init(void);  // the UTF-8 byte table, built once at startup
+
+void input_init(void)
+{
+    input_utf8_init();
+    s_q = xQueueCreate(64, sizeof(event_t));
+}
 
 bool ev_post(const event_t *e) { return xQueueSend(s_q, e, 0) == pdTRUE; }
 
@@ -58,10 +65,116 @@ void ev_call_sync(void (*fn)(void *), void *arg)
 
 // ---------------------------------------------------------------- keyboard
 
+// What a key prints comes from the layout tables (main/layout_gen.c, from tools/layouts/),
+// so the same physical key types a different letter on a German and a French keyboard.
 static const char s_plain[] = "abcdefghijklmnopqrstuvwxyz1234567890\n\x1b\b\t -=[]\\#;'`,./";
 static const char s_shift[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()\n\x1b\b\t _+{}|~:\"~<>?";
 
 static bool s_caps;
+static int s_layout;           // the layout the OS types with, read from the settings
+static int s_dead;             // a dead key is armed, waiting for the letter it accents
+static char s_utf8[256][4];    // the bytes of every code point the fonts can draw
+static char s_comp[6][52][4];  // dead key + letter -> composed letter, empty = no such letter
+
+// the letter a dead key makes with the letter after it, by dead key and letter
+static const uint16_t s_comp_code[6][26] = {
+    {0},  // no dead key
+    // the row index is the letter it accents: a=0, e=4, i=8, o=14, u=20, n=13
+    // circumflex
+    {226,0,0,0,234,0,0,0,238,0,0,0,0,0,244,0,0,0,0,0,251,0,0,0,0,0},
+    // grave
+    {224,0,0,0,232,0,0,0,236,0,0,0,0,0,242,0,0,0,0,0,249,0,0,0,0,0},
+    // acute
+    {225,0,0,0,233,0,0,0,237,0,0,0,0,0,243,0,0,0,0,0,250,0,0,0,0,0},
+    // diaeresis
+    {228,0,0,0,235,0,0,0,239,0,0,0,0,0,246,0,0,0,0,0,252,0,0,0,0,0},
+    // tilde
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,241,0,0,0,0,0,0,0,0,0,0,0,0},
+};
+
+int input_layout_get(void) { return s_layout; }
+
+void input_layout_set(int layout)
+{
+    if (layout < 0 || layout >= layout_count) return;
+    s_layout = layout;
+    s_dead = 0;
+}
+
+const char *input_utf8(uint16_t code)
+{
+    return code <= 255 ? s_utf8[code] : "";
+}
+
+// the accent a dead key prints on its own
+static const uint16_t s_dead_char[6] = { 0, 0x5E, 0x60, 0xB4, 0xA8, 0x7E };
+
+static bool s_altgr;  // the right Alt key: the keyboards' AltGr
+
+static void input_utf8_init(void)
+{
+    for (int c = 0; c < 256; c++) {
+        if (c < 128) {
+            s_utf8[c][0] = (char)c;
+            s_utf8[c][1] = 0;
+        } else {
+            s_utf8[c][0] = (char)(0xC0 | (c >> 6));
+            s_utf8[c][1] = (char)(0x80 | (c & 0x3F));
+            s_utf8[c][2] = 0;
+        }
+    }
+    for (int d = 1; d < 6; d++) {
+        for (int i = 0; i < 26; i++) {
+            uint16_t code = s_comp_code[d][i];
+            strcpy(s_comp[d][i], code ? input_utf8(code) : "");
+            uint16_t up = code ? code - 32 : 0;
+            strcpy(s_comp[d][i + 26], up ? input_utf8(up) : "");
+        }
+    }
+}
+
+// the text a key press makes in the current layout: the key's own character, composed with
+// a dead key that is armed. out is a UTF-8 string, empty when the key prints nothing.
+static void key_text(uint8_t usage, uint8_t mods, char *out, int cap)
+{
+    out[0] = 0;
+    if (usage == K_KP_ENTER) { out[0] = '\n'; return; }
+    if (usage >= 0x54 && usage <= 0x63) { out[0] = "/*-+\n1234567890."[usage - 0x54]; return; }
+    if (usage < LAYOUT_USAGE_MIN || usage > LAYOUT_USAGE_MAX) return;
+    bool shift = (mods & MOD_SHIFT) || (s_caps && usage >= K_A && usage <= K_Z);
+    int st = layout_state(shift, (mods & MOD_RALT) != 0);
+    uint16_t code = layout_cp[s_layout][usage][st];
+    uint16_t dead = layout_dead[s_layout][usage][st];
+    if (dead) { s_dead = dead; return; }  // a dead key waits for the letter after it
+    if (!code) return;
+    int d = s_dead;
+    s_dead = 0;
+    if (!d) {
+        strcpy(out, input_utf8(code));
+        return;
+    }
+    if (code == ' ') {  // dead key then Space prints the accent
+        strcpy(out, input_utf8(s_dead_char[d]));
+        return;
+    }
+    if (code >= 'a' && code <= 'z' && s_comp[d][code - 'a'][0]) {
+        strcpy(out, s_comp[d][code - 'a']);
+        return;
+    }
+    if (code >= 'A' && code <= 'Z' && s_comp[d][code - 'A' + 26][0]) {
+        strcpy(out, s_comp[d][code - 'A' + 26]);
+        return;
+    }
+    // the accent does not fit this letter: the accent and the letter, one after the other
+    const char *acc = input_utf8(s_dead_char[d]);
+    const char *ltr = input_utf8(code);
+    if ((int)(strlen(acc) + strlen(ltr)) < cap) {
+        strcpy(out, acc);
+        strcat(out, ltr);
+    }
+}
+
+// US layout helpers
 
 char input_usage_to_char(uint8_t usage, uint8_t mods)
 {
@@ -86,12 +199,32 @@ bool input_char_to_usage(char c, uint8_t *usage, bool *shift)
     return false;
 }
 
+// find the key that prints a code point in the current layout: used by the serial 'type'
+// command, which sends text to the board
+// what a key press prints in the current layout, for the serial console to check
+void input_key_text_test(uint8_t usage, uint8_t mods, char *out, int cap)
+{
+    key_text(usage, mods, out, cap);
+}
+
+bool input_key_find(uint16_t code, uint8_t *usage, int *state)
+{
+    if (code < 4 || code > 0xFF) return false;
+    for (int u = LAYOUT_USAGE_MIN; u <= LAYOUT_USAGE_MAX; u++) {
+        for (int st = 0; st < 4; st++) {
+            if (layout_cp[s_layout][u][st] == code) { *usage = u; *state = st; return true; }
+        }
+    }
+    return false;
+}
+
 static uint8_t mod_of(uint8_t usage)
 {
     switch (usage) {
     case K_LCTRL: case K_RCTRL: return MOD_CTRL;
     case K_LSHIFT: case K_RSHIFT: return MOD_SHIFT;
-    case K_LALT: case K_RALT: return MOD_ALT;
+    case K_LALT: return MOD_ALT;
+    case K_RALT: return MOD_RALT;   // AltGr is a typing state, so apps must not treat it as a shortcut
     case K_LGUI: case K_RGUI: return MOD_GUI;
     }
     return 0;
@@ -105,15 +238,18 @@ void input_key(uint8_t usage, bool down)
     else s_keys_down[usage >> 3] &= ~(1 << (usage & 7));
     if (was == down && !down) return;
     if (usage == 0x39 && down && !was) s_caps = !s_caps;   // Caps Lock
+    if (usage == K_RALT) s_altgr = down;
     uint8_t m = mod_of(usage);
     if (m) {
         if (down) s_mods |= m; else s_mods &= ~m;
     }
     event_t e = {.type = EV_KEY, .key = usage, .mods = s_mods, .down = down};
-    e.ch = input_usage_to_char(usage, s_mods);
-    if ((s_mods & (MOD_CTRL | MOD_ALT | MOD_GUI)) && e.ch) {
-        // keep the base letter so shortcuts can match on it
-        e.ch = input_usage_to_char(usage, 0);
+    if (s_mods & (MOD_CTRL | MOD_GUI)) {
+        e.ch = input_usage_to_char(usage, 0);  // keep the base letter so shortcuts can match on it
+        e.chs[0] = 0;
+    } else if (down) {
+        key_text(usage, s_mods, e.chs, sizeof e.chs);
+        e.ch = e.chs[0];
     }
     ev_post(&e);
     if (down && !m) {
@@ -132,7 +268,13 @@ int input_repeat_poll(void)
     int64_t due = s_rep_next;
     if (now >= due) {
         event_t e = {.type = EV_KEY, .key = k, .mods = s_mods, .down = 1, .repeat = 1};
-        e.ch = input_usage_to_char(k, (s_mods & (MOD_CTRL | MOD_ALT | MOD_GUI)) ? 0 : s_mods);
+        if (s_mods & (MOD_CTRL | MOD_GUI)) {
+            e.ch = input_usage_to_char(k, 0);
+            e.chs[0] = 0;
+        } else {
+            key_text(k, s_mods, e.chs, sizeof e.chs);
+            e.ch = e.chs[0];
+        }
         ev_post(&e);
         int period = 1000000 / (input_repeat_rate > 0 ? input_repeat_rate : 1);
         s_rep_next = now + period;

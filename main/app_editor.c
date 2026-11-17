@@ -31,6 +31,21 @@ typedef struct {
 static inline int ta_len(const textarea_t *t) { return t->cap - (t->gap1 - t->gap0); }
 static inline char ta_ch(const textarea_t *t, int i) { return i < t->gap0 ? t->buf[i] : t->buf[i + (t->gap1 - t->gap0)]; }
 
+// the bytes of the glyph just before a caret, and just after it: an accented letter is 2
+// bytes, so Backspace and Delete take a whole letter and not half of one
+static int ta_back_span(const textarea_t *t, int pos)
+{
+    if (pos >= 2 && (ta_ch(t, pos - 2) & 0xC0) == 0xC0) return 2;
+    return 1;
+}
+
+static int ta_fwd_span(const textarea_t *t, int pos, int len)
+{
+    unsigned char c = pos < len ? (unsigned char)ta_ch(t, pos) : 0;
+    if ((c & 0xE0) == 0xC0 && pos + 1 < len) return 2;
+    return 1;
+}
+
 static void ta_move_gap(textarea_t *t, int pos)
 {
     if (pos < t->gap0) {
@@ -88,11 +103,17 @@ static int ta_line_end(const textarea_t *t, int off)
     return off;
 }
 
-// visual column of offset 'off' on the line starting at 'ls'
+// visual column of offset 'off' on the line starting at 'ls': one column per glyph, so an
+// accented letter (2 bytes) takes the room of one letter
 static int ta_vcol(const textarea_t *t, int ls, int off)
 {
-    int col = 0;
-    for (int i = ls; i < off; i++) col += ta_ch(t, i) == '\t' ? TAB_W - (col % TAB_W) : 1;
+    int col = 0, len = ta_len(t), i = ls;
+    while (i < off) {
+        int n;
+        gfx_glyph(t->buf, i, len, &n);
+        if (ta_ch(t, i) == '\t') { col += TAB_W - (col % TAB_W); i++; }
+        else { col++; i += n; }
+    }
     return col;
 }
 
@@ -101,9 +122,11 @@ static int ta_off_at_col(const textarea_t *t, int ls, int col)
 {
     int len = ta_len(t), c = 0, i = ls;
     while (i < len && ta_ch(t, i) != '\n') {
+        int n;
+        gfx_glyph(t->buf, i, len, &n);
         int wdt = ta_ch(t, i) == '\t' ? TAB_W - (c % TAB_W) : 1;
-        if (c + wdt > col) { if (col - c > wdt / 2) i++; break; }
-        c += wdt; i++;
+        if (c + wdt > col) { if (col - c > wdt / 2) i += n; break; }
+        c += wdt; i += n;
     }
     return i;
 }
@@ -241,11 +264,13 @@ static void ta_paint(widget_t *w, gfx_t *g)
         int y = 2 + row * CH_H;
         bool vis = gfx_visible(g, 0, y, w->r.w, CH_H);
         int col = 0, i = off;
-        char run[128];
-        int rn = 0, rcol = 0;
+        char run[256];
+        int rb = 0, rg = 0, rcol = 0;   // the run of text: bytes and glyphs
         bool rsel = false;
-        for (;; i++) {
+        for (;;) {
             bool end = i >= len || ta_ch(t, i) == '\n';
+            int n = 1;
+            if (!end) gfx_glyph(t->buf, i, len, &n);   // a glyph is 1 byte, or 2 for an accent
             char c = end ? ' ' : ta_ch(t, i);
             int wdt = c == '\t' ? TAB_W - (col % TAB_W) : 1;
             bool sel = i >= s0 && i < s1;
@@ -254,21 +279,24 @@ static void ta_paint(widget_t *w, gfx_t *g)
             if (vis) for (int k = 0; k < wdt; k++) {
                 int vc = col + k - t->hscroll;
                 if (vc < 0 || vc >= cols) continue;
-                if (rn && (sel != rsel || rn == (int)sizeof(run))) {
-                    if (rsel) gfx_fill(g, x0 + rcol * CH_W, y, rn * CH_W, CH_H, foc ? C_SEL : C_GREY);
-                    gfx_text(g, x0 + rcol * CH_W, y, run, rn, FONT_MONO, rsel && foc ? C_SEL_TEXT : C_TEXT);
-                    rn = 0;
+                if (rb && (sel != rsel || rb + n > (int)sizeof(run))) {
+                    if (rsel) gfx_fill(g, x0 + rcol * CH_W, y, rg * CH_W, CH_H, foc ? C_SEL : C_GREY);
+                    gfx_text(g, x0 + rcol * CH_W, y, run, rb, FONT_MONO, rsel && foc ? C_SEL_TEXT : C_TEXT);
+                    rb = 0; rg = 0;
                 }
-                if (!rn) { rcol = vc; rsel = sel; }
-                run[rn++] = c == '\t' ? ' ' : c;
+                if (!rb) { rcol = vc; rsel = sel; }
+                if (end) run[rb++] = ' ';
+                else for (int b = 0; b < n; b++) run[rb++] = ta_ch(t, i + b) == '\t' ? ' ' : ta_ch(t, i + b);
+                rg++;
             }
             col += wdt;
             if (end) break;
+            i += n;
             if (col - t->hscroll > cols && i >= s1 && !(i < t->cur)) { i = ta_line_end(t, i); break; }
         }
-        if (rn && vis) {
-            if (rsel) gfx_fill(g, x0 + rcol * CH_W, y, rn * CH_W, CH_H, foc ? C_SEL : C_GREY);
-            gfx_text(g, x0 + rcol * CH_W, y, run, rn, FONT_MONO, rsel && foc ? C_SEL_TEXT : C_TEXT);
+        if (rb && vis) {
+            if (rsel) gfx_fill(g, x0 + rcol * CH_W, y, rg * CH_W, CH_H, foc ? C_SEL : C_GREY);
+            gfx_text(g, x0 + rcol * CH_W, y, run, rb, FONT_MONO, rsel && foc ? C_SEL_TEXT : C_TEXT);
         }
         if (i >= len) break;
         off = i + 1;
@@ -309,12 +337,12 @@ static bool ta_key(widget_t *w, const event_t *e)
     case K_LEFT:
         if (ctrl) { int i = t->cur; while (i > 0 && !is_word(ta_ch(t, i - 1))) i--; while (i > 0 && is_word(ta_ch(t, i - 1))) i--; ta_move(t, i, shift, false); }
         else if (!shift && ta_has_sel(t)) ta_move(t, t->cur < t->anchor ? t->cur : t->anchor, false, false);
-        else ta_move(t, t->cur - 1, shift, false);
+        else ta_move(t, t->cur - ta_back_span(t, t->cur), shift, false);
         return true;
     case K_RIGHT:
         if (ctrl) { int i = t->cur; while (i < len && is_word(ta_ch(t, i))) i++; while (i < len && !is_word(ta_ch(t, i))) i++; ta_move(t, i, shift, false); }
         else if (!shift && ta_has_sel(t)) ta_move(t, t->cur > t->anchor ? t->cur : t->anchor, false, false);
-        else ta_move(t, t->cur + 1, shift, false);
+        else ta_move(t, t->cur + ta_fwd_span(t, t->cur, len), shift, false);
         return true;
     case K_UP: ta_vertical(t, -1, shift); return true;
     case K_DOWN: ta_vertical(t, 1, shift); return true;
@@ -323,11 +351,11 @@ static bool ta_key(widget_t *w, const event_t *e)
     case K_HOME: ta_move(t, ctrl ? 0 : ta_line_start(t, t->cur), shift, false); return true;
     case K_END: ta_move(t, ctrl ? len : ta_line_end(t, t->cur), shift, false); return true;
     case K_BKSP:
-        if (!ta_has_sel(t)) { if (t->cur == 0) return true; t->anchor = t->cur - 1; }
+        if (!ta_has_sel(t)) { if (t->cur == 0) return true; t->anchor = t->cur - ta_back_span(t, t->cur); }
         ta_delete_sel(t); t->want_col = -1; ta_changed(t); ta_reveal(t); ui_invalidate(w);
         return true;
     case K_DEL:
-        if (!ta_has_sel(t)) { if (t->cur >= len) return true; t->anchor = t->cur + 1; }
+        if (!ta_has_sel(t)) { if (t->cur >= len) return true; t->anchor = t->cur + ta_fwd_span(t, t->cur, len); }
         ta_delete_sel(t); t->want_col = -1; ta_changed(t); ta_reveal(t); ui_invalidate(w);
         return true;
     case K_ENTER: case K_KP_ENTER: {
@@ -353,8 +381,8 @@ static bool ta_key(widget_t *w, const event_t *e)
         }
         return false;
     }
-    if (e->ch >= 32 && e->ch < 127) {
-        ta_type(t, &e->ch, 1);
+    if (e->chs[0]) {
+        ta_type(t, e->chs, (int)strlen(e->chs));
         ta_reveal(t);
         ui_invalidate(w);
         return true;

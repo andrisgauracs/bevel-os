@@ -13,6 +13,7 @@
 #include "display.h"
 #include "audio.h"
 #include "fsutil.h"
+#include "layout.h"
 #include "esp_heap_caps.h"
 
 // ================================================================ settings
@@ -53,6 +54,10 @@ void settings_load(void)
         else if (!strcmp(line, "zone")) {
             for (int i = 0; i < clock_zone_count(); i++) if (!strcmp(eq + 1, clock_zone_name(i))) clock_set_zone(i);
         }
+        else if (!strcmp(line, "layout")) {
+            for (int i = 0; i < layout_count; i++)
+                if (!strcmp(eq + 1, layout_name[i])) { input_layout_set(i); serial_printf("layout set %d from settings\n", i); }
+        }
     }
     free(s);
 }
@@ -71,7 +76,7 @@ bool settings_save(void)
 #if BOARD_HAS_AUDIO
                "volume=%d\nsounds=%d\n"
 #endif
-               "zone=%s\n",
+               "zone=%s\nlayout=%s\n",
             shell_desktop_color, input_mouse_speed, input_repeat_delay, input_repeat_rate,
 #if DISP_HAS_BACKLIGHT
             disp_get_brightness(),
@@ -79,7 +84,7 @@ bool settings_save(void)
 #if BOARD_HAS_AUDIO
             audio_volume, audio_system_sounds,
 #endif
-            clock_zone_name(clock_zone()));
+            clock_zone_name(clock_zone()), layout_name[input_layout_get()]);
     if (fclose(f) != 0) return false;
     unlink(SETTINGS_FILE);
     return rename(SETTINGS_FILE ".tmp", SETTINGS_FILE) == 0;
@@ -87,13 +92,15 @@ bool settings_save(void)
 
 static window_t *s_set;
 static struct {
-    widget_t *colors, *speed, *delay, *rate, *bright, *volume, *sounds, *zones;
-    uint8_t old_color; int old_speed, old_delay, old_rate, old_bright, old_volume, old_sounds, old_zone;
+    widget_t *colors, *speed, *delay, *rate, *bright, *volume, *sounds, *zones, *layouts;
+    uint8_t old_color; int old_speed, old_delay, old_rate, old_bright, old_volume, old_sounds, old_zone, old_layout;
 } s_sd;
 
 static void colors_get(widget_t *lv, int i, lv_item_t *it) { it->text = s_colors[i].name; }
 
 static void zones_get(widget_t *lv, int i, lv_item_t *it) { it->text = clock_zone_name(i); }
+
+static void layouts_get(widget_t *lv, int i, lv_item_t *it) { it->text = layout_name[i]; }
 
 static void set_apply(widget_t *w, int code)
 {
@@ -112,6 +119,8 @@ static void set_apply(widget_t *w, int code)
 #endif
     int z = ui_listview_sel(s_sd.zones);
     if (z >= 0 && z != clock_zone()) clock_set_zone(z);
+    int l = ui_listview_sel(s_sd.layouts);
+    if (l >= 0 && l != input_layout_get()) input_layout_set(l);  // typing changes as you pick
     // preview swatch
     for (widget_t *x = s_set->widgets; x; x = x->next) if (!strcmp(x->cls->name, "canvas")) ui_invalidate(x);
 }
@@ -146,6 +155,7 @@ static void set_cancel(widget_t *b, int code)
     audio_system_sounds = s_sd.old_sounds;
 #endif
     clock_set_zone(s_sd.old_zone);
+    input_layout_set(s_sd.old_layout);
     comp_invalidate_all();
     wm_destroy(s_set);
 }
@@ -156,7 +166,7 @@ static void set_destroy(window_t *w) { s_set = NULL; }
 void app_settings(const char *arg)
 {
     if (s_set) { wm_activate(s_set); return; }
-    window_t *w = wm_create("Settings", 640, 292, WIN_DIALOG);
+    window_t *w = wm_create("Settings", 640, 424, WIN_DIALOG);
     w->icon = &icon16_settings;
     s_set = w;
     s_sd.old_color = shell_desktop_color; s_sd.old_speed = input_mouse_speed;
@@ -168,6 +178,7 @@ void app_settings(const char *arg)
     s_sd.old_volume = audio_volume; s_sd.old_sounds = audio_system_sounds;
 #endif
     s_sd.old_zone = clock_zone();
+    s_sd.old_layout = input_layout_get();
 
     ui_groupbox(w, 10, 8, 380, 124, "Desktop");
     ui_label(w, 22, 28, 100, 14, "&Colour:");
@@ -184,17 +195,23 @@ void app_settings(const char *arg)
     s_sd.speed->on_action = set_apply;
     ui_label(w, 350, 160, 30, 14, "Fast");
 
-    ui_groupbox(w, 10, 190, 380, 64, "Keyboard");
-    ui_label(w, 22, 210, 100, 14, "Repeat &delay:");
-    ui_label(w, 122, 210, 30, 14, "Short");
-    s_sd.delay = ui_slider(w, 152, 204, 190, 1, 8, (input_repeat_delay - 100) / 100);
+    ui_groupbox(w, 10, 190, 380, 196, "Keyboard");
+    // the layout is what the keys print: picked from the list, and typing changes straight away
+    ui_label(w, 22, 204, 100, 14, "Keyboard &layout:");
+    s_sd.layouts = ui_listview(w, 22, 220, 350, 126, layouts_get);
+    ui_listview_set_count(s_sd.layouts, layout_count);
+    ui_listview_select(s_sd.layouts, input_layout_get());
+    s_sd.layouts->on_action = set_apply;
+    ui_label(w, 22, 352, 100, 14, "Repeat &delay:");
+    ui_label(w, 122, 352, 30, 14, "Short");
+    s_sd.delay = ui_slider(w, 152, 346, 190, 1, 8, (input_repeat_delay - 100) / 100);
     s_sd.delay->on_action = set_apply;
-    ui_label(w, 350, 210, 30, 14, "Long");
-    ui_label(w, 22, 232, 100, 14, "Repeat &rate:");
-    ui_label(w, 122, 232, 30, 14, "Slow");
-    s_sd.rate = ui_slider(w, 152, 226, 190, 1, 8, input_repeat_rate / 5);
+    ui_label(w, 350, 352, 30, 14, "Long");
+    ui_label(w, 22, 374, 100, 14, "Repeat &rate:");
+    ui_label(w, 122, 374, 30, 14, "Slow");
+    s_sd.rate = ui_slider(w, 152, 368, 190, 1, 8, input_repeat_rate / 5);
     s_sd.rate->on_action = set_apply;
-    ui_label(w, 350, 232, 30, 14, "Fast");
+    ui_label(w, 350, 374, 30, 14, "Fast");
 
     // The right-hand column holds only the groups this board has hardware for, stacked from the top
     // so a board without a backlight or without sound has no hole where those groups would be. The
@@ -216,15 +233,15 @@ void app_settings(const char *arg)
     s_sd.sounds->on_action = set_apply;
     gy += 78;
 #endif
-    ui_groupbox(w, 400, gy, 230, 254 - gy, "Clock");
+    ui_groupbox(w, 400, gy, 230, 386 - gy, "Clock");
     ui_label(w, 412, gy + 20, 100, 14, "Time &zone:");
-    s_sd.zones = ui_listview(w, 412, gy + 36, 206, 208 - gy, zones_get);
+    s_sd.zones = ui_listview(w, 412, gy + 36, 206, 340 - gy, zones_get);
     ui_listview_set_count(s_sd.zones, clock_zone_count());
     ui_listview_select(s_sd.zones, clock_zone());
     s_sd.zones->on_action = set_apply;
 
-    widget_t *ok = ui_button(w, 468, 260, 78, 24, "OK", set_ok);
-    widget_t *ca = ui_button(w, 552, 260, 78, 24, "Cancel", set_cancel);
+    widget_t *ok = ui_button(w, 468, 392, 78, 24, "OK", set_ok);
+    widget_t *ca = ui_button(w, 552, 392, 78, 24, "Cancel", set_cancel);
     w->def_btn = ok; w->cancel_btn = ca;
     w->on_close = set_close;
     w->on_destroy = set_destroy;
@@ -627,7 +644,7 @@ static void term_paint(widget_t *w, gfx_t *g)
     char prompt[300];
     snprintf(prompt, sizeof(prompt), "%s> %.*s", term_show(t->cwd), t->ilen, t->input);
     int plen = strlen(prompt);
-    int prows = t->scroll ? 0 : plen / T_COLS + 1;
+    int prows = t->scroll ? 0 : gfx_glyphs(prompt, plen) / T_COLS + 1;
     int hist = t->lines[t->head][0] ? t->count : t->count - 1;  // finished lines
     int show = rows - prows;
     int first = hist - show - t->scroll;
@@ -638,10 +655,16 @@ static void term_paint(widget_t *w, gfx_t *g)
         gfx_text(g, 4, y, t->lines[idx], -1, FONT_MONO, RGB222(2, 2, 2));
     }
     if (!t->scroll) {
-        for (int off = 0; off <= plen; off += T_COLS, y += 16) {
-            int n = plen - off > T_COLS ? T_COLS : plen - off;
-            gfx_text(g, 4, y, prompt + off, n, FONT_MONO, C_GREEN);
-            if (off + T_COLS > plen && ui_focused(w) && ui_caret_on()) gfx_fill(g, 4 + n * 8, y + 13, 8, 2, C_GREEN);
+        // the prompt wraps at glyph boundaries, so a line break never cuts an accented letter
+        int off = 0;
+        for (;;) {
+            int gl = 0, pos = off;
+            while (pos < plen && gl < T_COLS) { int b; gfx_glyph(prompt, pos, plen, &b); pos += b; gl++; }
+            gfx_text(g, 4, y, prompt + off, pos - off, FONT_MONO, C_GREEN);
+            if (pos >= plen && ui_focused(w) && ui_caret_on()) gfx_fill(g, 4 + gl * 8, y + 13, 8, 2, C_GREEN);
+            y += 16;
+            if (pos >= plen) break;
+            off = pos;
         }
     }
 }
@@ -671,14 +694,20 @@ static bool term_key(widget_t *w, const event_t *e)
         if (!wm_valid(win) || (win->flags & WIN_DEAD)) return true;
         break;
     }
-    case K_BKSP: if (t->ilen) t->ilen--; break;
+    case K_BKSP: if (t->ilen) t->ilen -= gfx_glyph_back(t->input, t->ilen); break;
     case K_UP: strcpy(t->input, t->last); t->ilen = strlen(t->input); break;
     case K_DOWN: t->ilen = 0; break;
     case K_PGUP: t->scroll += 10; if (t->scroll > t->count - 5) t->scroll = t->count > 5 ? t->count - 5 : 0; break;
     case K_PGDN: t->scroll -= 10; if (t->scroll < 0) t->scroll = 0; break;
     case K_ESC: t->ilen = 0; break;
     default:
-        if (e->ch >= 32 && e->ch < 127 && t->ilen < (int)sizeof(t->input) - 1) { t->input[t->ilen++] = e->ch; t->scroll = 0; }
+        if (e->chs[0]) {
+            int need = (int)strlen(e->chs);
+            if (t->ilen + need >= (int)sizeof(t->input)) return false;
+            memcpy(t->input + t->ilen, e->chs, need);
+            t->ilen += need;
+            t->scroll = 0;
+        }
         else return false;
     }
     ui_invalidate(w);

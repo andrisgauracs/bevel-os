@@ -598,15 +598,16 @@ static int first_box_at(browser_t *b, int y)
 
 static void big_text(gfx_t *g, int x, int y, const char *s, int n, uint8_t col)
 {
-    for (int i = 0; i < n; i++) {
-        unsigned c = (unsigned char)s[i];
-        int gi = (c < 32 || c > 126) ? '?' - 32 : (int)c - 32;
+    for (int i = 0; i < n; ) {
+        int b;
+        int gi = gfx_glyph(s, i, n, &b);
         for (int r = 0; r < FONT_UI_H; r++) {
             uint32_t bits = font_ui_rows[gi][r];
             bits |= bits >> 1;
             for (int k = 0; bits; k++, bits = (bits << 1) & 0xFFFF) if (bits & 0x8000) gfx_fill(g, x + k * 2, y + r * 2, 2, 2, col);
         }
         x += (font_ui_adv[gi] + 1) * 2;
+        i += b;
     }
 }
 

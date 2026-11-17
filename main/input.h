@@ -17,6 +17,7 @@ enum {
 #define MOD_SHIFT 2
 #define MOD_ALT   4
 #define MOD_GUI   8
+#define MOD_RALT  16   // the right Alt key: AltGr, which types layout characters, not shortcuts
 
 #define BTN_LEFT  1
 #define BTN_RIGHT 2
@@ -38,7 +39,8 @@ typedef struct {
     uint8_t type;
     uint8_t mods;
     uint8_t key;        // HID usage
-    char ch;            // printable ASCII for this key with the current modifiers, or 0
+    char ch;            // first byte of the text this key produces, or 0
+    char chs[6];        // the text the key produces: UTF-8 bytes (1-2 per glyph), empty string = none
     uint8_t down;
     uint8_t repeat;
     uint8_t button;
@@ -82,3 +84,6 @@ int input_repeat_poll(void);
 // US layout helpers
 char input_usage_to_char(uint8_t usage, uint8_t mods);
 bool input_char_to_usage(char c, uint8_t *usage, bool *shift);
+// the key that prints a code point in the current layout (state: bit0 Shift, bit1 AltGr)
+bool input_key_find(uint16_t code, uint8_t *usage, int *state);
+void input_key_text_test(uint8_t usage, uint8_t mods, char *out, int cap);  // layout check for the serial console
