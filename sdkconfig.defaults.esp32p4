@@ -55,10 +55,12 @@ CONFIG_I2S_ISR_IRAM_SAFE=y
 # code in internal RAM.
 CONFIG_SPIRAM_PRE_CONFIGURE_MEMORY_PROTECTION=n
 
-# Camera: OV02C10 on the MIPI-CSI connector, 1 lane RAW10 at 1288x728 30 fps, through the ISP to
+# Camera: OV02C10 on the MIPI-CSI connector, 1 lane RAW10 at 1288x728 or 1920x1080 30 fps (the
+# Camera window picks; 1288x728 at start-up), through the ISP to
 # RGB565; the ISP pipeline controller runs auto exposure and white balance
 CONFIG_CAMERA_OV02C10=y
 CONFIG_CAMERA_OV02C10_MIPI_RAW10_1288X728_30FPS=y
+CONFIG_CAMERA_OV02C10_MIPI_RAW10_1920X1080_30FPS_1_LANE=y
 CONFIG_CAMERA_OV02C10_MIPI_DEFAULT_FMT_RAW10_1288X728_30FPS=y
 CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
 # The CSI receiver's state must sit in internal RAM: its DMA (DW-GDMA) refuses a callback context in

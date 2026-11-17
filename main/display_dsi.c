@@ -131,12 +131,26 @@ static void IRAM_ATTR convert(int x, int y, int w, int h, const uint8_t *src, in
             }
             for (; i < w; i++) d[i] = lut[src[i]];
         } else {
-            for (int i = 0; i < w; i++) {
+            // a run of one overlay's key colour is copied from that overlay's row in one go (black
+            // where the key reaches past the surface); a pixel at a time cost a live camera picture
+            // 34 ms a frame
+            for (int i = 0; i < w;) {
                 uint8_t v = src[i];
-                if (v < 0x40) { d[i] = lut[v]; continue; }
+                if (v < 0x40) { d[i] = lut[v]; i++; continue; }
+                int j = i + 1;
+                while (j < w && src[j] == v) j++;
                 const overlay_t *o = &s_ov[v & (DISP_OVERLAYS - 1)];
-                int ox = x + i - o->x, oy = yy - o->y;
-                d[i] = (o->px && ox >= 0 && oy >= 0 && ox < o->w && oy < o->h) ? o->px[oy * o->w + ox] : 0;
+                int oy = yy - o->y;
+                int lo = o->x - x, hi = lo + o->w;          // the surface's columns, in this row's terms
+                int a = i > lo ? i : lo, b = j < hi ? j : hi;
+                if (!o->px || oy < 0 || oy >= o->h || a >= b) {
+                    memset(d + i, 0, (j - i) * 2);
+                } else {
+                    if (a > i) memset(d + i, 0, (a - i) * 2);
+                    memcpy(d + a, o->px + oy * o->w + (a - lo), (b - a) * 2);
+                    if (j > b) memset(d + b, 0, (j - b) * 2);
+                }
+                i = j;
             }
         }
         if (s_cur_on && yy >= s_cur_y && yy < s_cur_y + s_cur_h) {
