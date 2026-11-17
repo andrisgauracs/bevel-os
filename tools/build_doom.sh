@@ -21,7 +21,9 @@ case "$TARGET" in
     ARCH="-mlongcalls"
     EXTRA="--remove-section=.xt.lit --remove-section=.xt.prop --remove-section=.xtensa.info"
     DEFINES="-DBV_ARCH_RISCV=0"                      # no sound hardware on this board
-    LIBS="-lgcc"
+    # no libgcc either: linked into this shared ELF, its non-PIC __divdi3 (m_fixed.c's FixedDiv)
+    # makes ld assert (elf32-xtensa.c:3301); the OS exports those routines (app_loader.c)
+    LIBS=""
     INCLUDES=""
     ;;
   *) echo "target must be esp32p4 or esp32s3"; exit 1 ;;

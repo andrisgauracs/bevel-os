@@ -1,7 +1,10 @@
 // Doom on Bevel OS: the platform layer for doomgeneric (https://github.com/ozkl/doomgeneric, GPL-2).
-// The engine renders 320x200 in 256 colours. It is shown at 640x400 in the window's true-colour
-// layer (RGB565), so the game's own palette is used as it is. Sound effects go to the OS mixer;
-// there is no music (that would need a MIDI synthesiser).
+// The engine renders 320x200 in 256 colours, shown at 640x400. Where the board has a true-colour
+// layer (the P4's DSI panel) every game pixel becomes a 2x2 block of RGB565, so the game's own palette
+// is used as it is. Without one (the S3's VGA output, 64 colours) the four screen pixels of each game
+// pixel carry a 2x2 ordered dither instead, which gives five shades between each pair of real colour
+// levels at no loss of resolution. Sound effects go to the OS mixer where the board has sound; there
+// is no music (that would need a MIDI synthesiser).
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -18,9 +21,11 @@ extern struct color colors[256];
 extern int palette_changed;   // boolean in the engine
 
 static const bevel_api_t *os;
-static uint16_t *s_px;
+static uint16_t *s_px;              // the true-colour layer, or NULL
+static uint8_t *s_canvas;           // otherwise the RGB222 canvas
 static int s_cw, s_ch;
-static uint16_t s_lut[256];
+static uint16_t s_lut[256];         // RGB565 per palette entry, or for the canvas two dithered pixels:
+static uint16_t s_lut_bot[256];     // s_lut for the even screen rows, s_lut_bot for the odd ones
 
 #define KQ 64
 static struct { uint8_t pressed, key; } s_keys[KQ];
@@ -28,25 +33,59 @@ static int s_kr, s_kw;
 
 void bevel_exit(void);
 
+// One channel of a game colour at one of the four positions of a 2x2 block, as an RGB222 pixel.
+static uint8_t quant(int r, int g, int b, int pos)
+{
+    static const int off[4] = {-32, 11, 32, -11};   // 2x2 Bayer thresholds, in units of 1/255
+    int c[3] = {r, g, b};
+    uint8_t p = 0;
+    for (int k = 0; k < 3; k++) {
+        int v = c[k] + off[pos];
+        int q = (v + 42) / 85;
+        if (v < 0) q = 0;
+        if (q > 3) q = 3;
+        p |= q << (k * 2);
+    }
+    return p;
+}
+
 void DG_Init(void)
 {
     // The canvas has to exist before the true-colour layer for it can be allocated, so the window
-    // comes first. A board without such a layer (the VGA devkit) gets the message instead, and
-    // closing the app closes the window again.
-    if (os->win_open("Doom", DOOMGENERIC_RESX * 2, DOOMGENERIC_RESY * 2) != 0) bevel_exit();
+    // comes first.
+    int w = DOOMGENERIC_RESX * 2, h = DOOMGENERIC_RESY * 2;
+    if (os->win_open("Doom", w, h) != 0) bevel_exit();
     s_px = os->canvas16(&s_cw, &s_ch);
-    if (!s_px || s_cw != DOOMGENERIC_RESX * 2 || s_ch != DOOMGENERIC_RESY * 2) {
-        os->msgbox("Doom", "This program needs a true-colour display, which this board does not have.", BV_MB_OK);
-        bevel_exit();
+    if (s_px && (s_cw != w || s_ch != h)) s_px = NULL;
+    if (!s_px) {
+        s_canvas = os->canvas(&s_cw, &s_ch);
+        if (!s_canvas || s_cw < w || s_ch < h) bevel_exit();
     }
+}
+
+static void draw_dithered(void)
+{
+    const uint8_t *src = (const uint8_t *)DG_ScreenBuffer;
+    uint16_t top[DOOMGENERIC_RESX], bot[DOOMGENERIC_RESX];
+    for (int y = 0; y < DOOMGENERIC_RESY; y++, src += DOOMGENERIC_RESX) {
+        for (int x = 0; x < DOOMGENERIC_RESX; x++) { uint8_t i = src[x]; top[x] = s_lut[i]; bot[x] = s_lut_bot[i]; }
+        memcpy(s_canvas + (y * 2) * s_cw, top, DOOMGENERIC_RESX * 2);
+        memcpy(s_canvas + (y * 2 + 1) * s_cw, bot, DOOMGENERIC_RESX * 2);
+    }
+    os->flush();
 }
 
 void DG_DrawFrame(void)
 {
     if (palette_changed) {
-        for (int i = 0; i < 256; i++) s_lut[i] = BV_RGB565(colors[i].r, colors[i].g, colors[i].b);
+        for (int i = 0; i < 256; i++) {
+            int r = colors[i].r, g = colors[i].g, b = colors[i].b;
+            if (s_px) s_lut[i] = BV_RGB565(r, g, b);
+            else { s_lut[i] = quant(r, g, b, 0) | quant(r, g, b, 1) << 8; s_lut_bot[i] = quant(r, g, b, 2) | quant(r, g, b, 3) << 8; }
+        }
         palette_changed = 0;
     }
+    if (!s_px) { draw_dithered(); return; }
     // every game pixel becomes a 2x2 block of RGB565, so the 320x200 frame exactly fills the layer
     const uint8_t *src = (const uint8_t *)DG_ScreenBuffer;
     for (int y = 0; y < DOOMGENERIC_RESY; y++, src += DOOMGENERIC_RESX) {

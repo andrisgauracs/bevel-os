@@ -509,8 +509,15 @@ static int app_vfprintf(FILE *f, const char *fmt, va_list ap)
 
 // Compiler support routines (64-bit division, double-precision arithmetic). The RISC-V toolchain's
 // libgcc is not position-independent, so apps built for the P4 import these from the OS instead of
-// linking libgcc; the Xtensa apps for the S3 link their own copy (tools/build_apps.sh).
-#define LIBGCC_LIST(X) X(__divdi3) X(__udivdi3) X(__moddi3) X(__umoddi3) X(__muldi3) X(__ashldi3) X(__lshrdi3) X(__ashrdi3) X(__clzsi2) X(__ctzsi2) X(__adddf3) X(__subdf3) X(__muldf3) X(__divdf3) X(__extendsfdf2) X(__truncdfsf2) X(__fixdfsi) X(__fixunsdfsi) X(__floatsidf) X(__floatunsidf) X(__floatdidf) X(__fixdfdi) X(__eqdf2) X(__nedf2) X(__ltdf2) X(__ledf2) X(__gtdf2) X(__gedf2) X(__unorddf2)
+// linking libgcc. The small Xtensa apps for the S3 link their own copy (tools/build_apps.sh), but
+// Doom cannot (ld asserts on libgcc's __divdi3 in a shared object) and imports them like the P4
+// apps; it also needs single-precision division, which the S3's FPU leaves to libgcc.
+#if CONFIG_IDF_TARGET_ESP32S3
+#define LIBGCC_TARGET(X) X(__divsf3)
+#else
+#define LIBGCC_TARGET(X)
+#endif
+#define LIBGCC_LIST(X) LIBGCC_TARGET(X) X(__divdi3) X(__udivdi3) X(__moddi3) X(__umoddi3) X(__muldi3) X(__ashldi3) X(__lshrdi3) X(__ashrdi3) X(__clzsi2) X(__ctzsi2) X(__adddf3) X(__subdf3) X(__muldf3) X(__divdf3) X(__extendsfdf2) X(__truncdfsf2) X(__fixdfsi) X(__fixunsdfsi) X(__floatsidf) X(__floatunsidf) X(__floatdidf) X(__fixdfdi) X(__eqdf2) X(__nedf2) X(__ltdf2) X(__ledf2) X(__gtdf2) X(__gedf2) X(__unorddf2)
 #define X(n) extern void n(void);
 LIBGCC_LIST(X)
 #undef X

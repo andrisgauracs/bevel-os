@@ -286,11 +286,10 @@ building and writes them to the drive on the next boot. Run an app from Files, t
 Doom is a loadable app built from [doomgeneric](https://github.com/ozkl/doomgeneric) (GPL v2,
 included in `third_party/doomgeneric/`) and the platform layer `apps/doom/doom_bevel.c`. It
 renders 320x200 in 256 colours and is shown at 640x400. On the P4 board the game's own palette goes
-straight into the window's true-colour layer and the sound effects go to the OS mixer; that has been
-seen running there (title page and E1M1), nobody has heard its sound effects yet. The S3 board has
-no true-colour layer, so the current source tells the player that and quits; `disk/Apps/esp32s3/Doom.elf`
-is the older build, which dithers the 640x400 picture into the 64-colour palette. The S3 build of
-`Doom.elf` does not link at the moment (see the port notes).
+straight into the window's true-colour layer and the sound effects go to the OS mixer; both have
+been seen and heard working there. The S3 board has no true-colour layer, so there the four screen
+pixels of each game pixel carry a 2x2 ordered dither into the 64-colour palette, and there is no
+sound.
 
 `Doom.elf` is already in `disk/Apps/esp32s3/` and `disk/Apps/esp32p4/`, and in both firmwares. The
 game data is not in this repository. `tools/fetch_doom.sh` downloads the shareware `doom1.wad` v1.9
