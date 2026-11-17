@@ -111,11 +111,42 @@ static void make_chimes(void);
 static volatile int s_chime_wanted = -1;    // asked for before the sounds were ready
 static volatile bool s_chimes_ready;
 
+// The mixer has to keep up with the DAC, so it runs above everything that draws and above the USB and
+// touch tasks it shares a core with (usb_lib 10, hid and touch 8). That is right while it is mixing and
+// wrong for the first stretch of its life: synthesising the four system sounds used to take 2.3 s of pure
+// arithmetic, and at that priority it starved those input tasks for as long as it took - it showed up at
+// boot as a pointer that answered, then stopped, and started again at the exact moment the startup sound
+// did, the same whether or not the volume was up because the sounds are built either way. Synthesis is
+// 40 ms now (the log line below says how long it took, so a slower build is visible), and it still runs
+// below the input tasks: if that number ever grows again, this task should not pay for it at mixer
+// priority.
+#define MIXER_PRIO  12
+#define BUILD_PRIO   4
+
 static void mixer_task(void *arg)
 {
     static int32_t acc[BLOCK * 2];
     static int16_t out[BLOCK * 2];
+    uint32_t build_t0 = os_uptime_ms();
+    vTaskPrioritySet(NULL, BUILD_PRIO);   // synthesise out of the input tasks' way...
     make_chimes();
+    int peak = 0, tail = 0;   // a chime that decays to nothing still "builds" quickly and reports no error,
+                              // so check the sound: the whole peak, and the peak of its last tenth, which is
+                              // where a broken decay dies first (the version below logged 9229 and 0)
+    if (s_chime[CHIME_STARTUP]) {
+        int n = s_chime_len[CHIME_STARTUP], from = n - n / 10;
+        for (int i = 0; i < n; i++) {
+            int v = s_chime[CHIME_STARTUP][i];
+            if (v < 0) v = -v;
+            if (v > peak) peak = v;
+            if (i >= from && v > tail) tail = v;
+        }
+    }
+    ESP_LOGI(TAG, "chimes built in %u ms, startup sound peaks at %d, its last tenth at %d of 32767",
+             (unsigned)(os_uptime_ms() - build_t0), peak, tail);
+    vTaskPrioritySet(NULL, MIXER_PRIO);   // ...then take the priority the DAC expects
+    // Ready goes last and the parked request is taken straight after it. audio_chime runs on the other core:
+    // a request that arrives while this task is still busy would otherwise be parked and never picked up.
     s_chimes_ready = true;
     if (s_chime_wanted >= 0) audio_chime(s_chime_wanted);
     for (;;) {
@@ -252,16 +283,50 @@ void audio_stream_close(void)
 // ---------------------------------------------------------------- system sounds
 
 // A note: a sine with two soft overtones and an exponential decay, added into buf.
+//
+// The obvious way to write this - the sine of a steadily growing angle, and an exponential, once per
+// sample - cost 2.3 s of one core here, which is long enough to be in the way of the boot (see
+// MIXER_PRIO below). The same sound is a few cycles a sample if the angle walks a small table by
+// accumulation and the envelope is one running multiply.
+#define SINE_BITS 11                        // 2048 entries, 4 kB; at 880 Hz the phase advances 82 entries a sample
+#define SINE_STEPS (1 << SINE_BITS)
+static int16_t s_sine[SINE_STEPS];
+
+static void make_sine_table(void)
+{
+    for (int i = 0; i < SINE_STEPS; i++)
+        s_sine[i] = (int16_t)(32767.0f * sinf(2.0f * (float)M_PI * (float)i / SINE_STEPS));
+}
+
 static void note(int16_t *buf, int len, float start_s, float freq, float dur_s, float amp)
 {
     int a = (int)(start_s * CHIME_RATE), n = (int)(dur_s * CHIME_RATE);
+    uint32_t phase = 0;
+    uint32_t step = (uint32_t)(freq * (double)4294967296.0 / CHIME_RATE);   // phase per sample, one lap = 2^32
+    int env = 32767;                                    // Q15, kept below 32768 so env * dec stays inside 31 bits
+    // Per sample, not per note: the decay time constant is dur_s/5 seconds, so one sample is a factor of
+    // exp(-5 / (dur_s * CHIME_RATE)). Dropping the sample rate here - which is what this line first said -
+    // decays the note to silence in two samples, and the chime is inaudible while still being "built".
+    // Q16 with the discarded remainder carried, because Q15 is too coarse for a factor this close to one:
+    // truncated to 32759 it ran 5.45 e-folds instead of 5.00 (3.9 dB gone by the end of the note), and once
+    // the step it removes falls below one count the multiply stops decaying at all and the rest of the note
+    // drains to nothing - the 0.9 s notes went silent at 0.47 s, and the startup sound lost its last 0.63 s.
+    int dec = (int)(65536.0f * expf(-5.0f / (dur_s * (float)CHIME_RATE)) + 0.5f);
+    int carry = 0;
+    int a2 = (int)amp >> 4;                             // pre-scaled so the sums stay inside 32 bits
     for (int i = 0; i < n && a + i < len; i++) {
-        float t = (float)i / CHIME_RATE;
-        float env = expf(-t * 5.0f / dur_s) * (i < 60 ? i / 60.0f : 1.0f);
-        float ph = 2.0f * (float)M_PI * freq * t;
-        float s = sinf(ph) + 0.3f * sinf(2 * ph) + 0.12f * sinf(3 * ph);
-        int v = buf[a + i] + (int)(s * env * amp);
+        int p = (int)(phase >> (32 - SINE_BITS));       // 2^32 / SINE_STEPS per table step
+        int s = s_sine[p] + 3 * (int)s_sine[(2 * p) & (SINE_STEPS - 1)] / 10
+                            + 3 * (int)s_sine[(3 * p) & (SINE_STEPS - 1)] / 25;   // 0.3 and 0.12 of the fundamental
+        int add = ((s * a2) >> 11) * env >> 15;
+        if (i < 60) add = add * i / 60;                 // the same soft attack ramp
+        int v = buf[a + i] + add;
         buf[a + i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+        phase += step;
+        int e = env * dec;                              // 32767 * 65535 at most: fits
+        env = e >> 16;
+        carry += e & 0xFFFF;                            // put back what the shift threw away, one count at a time
+        if (carry >= 65536) { env++; carry -= 65536; }
     }
 }
 
@@ -277,6 +342,7 @@ static int16_t *chime_buf(int which, float seconds)
 static void make_chimes(void)
 {
     int16_t *b;
+    make_sine_table();
     if ((b = chime_buf(CHIME_STARTUP, 1.6f))) {
         int n = s_chime_len[CHIME_STARTUP];
         note(b, n, 0.00f, 392.00f, 0.9f, 5200);   // G4
@@ -291,10 +357,11 @@ static void make_chimes(void)
     }
     if ((b = chime_buf(CHIME_SHUTTER, 0.12f))) {
         uint32_t r = 12345;
+        int env = 32768, dec = (int)(32768.0f * expf(-60.0f / CHIME_RATE));
         for (int i = 0; i < s_chime_len[CHIME_SHUTTER]; i++) {
             r = r * 1664525u + 1013904223u;
-            float env = expf(-(float)i / CHIME_RATE * 60.0f);
-            b[i] = (int16_t)(((int)(r >> 16) - 32768) * env * 0.25f);
+            b[i] = (int16_t)((((int)(r >> 16) - 32768) * env >> 15) >> 2);
+            env = env * dec >> 15;
         }
     }
 }
@@ -339,7 +406,7 @@ void audio_start(void)
     std.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
     if (i2s_channel_init_std_mode(s_tx, &std) != ESP_OK || i2s_channel_enable(s_tx) != ESP_OK) { ESP_LOGE(TAG, "I2S setup failed"); return; }
     s_ok = true;
-    xTaskCreatePinnedToCore(mixer_task, "mixer", 4096, NULL, 12, NULL, SYS_CORE);
+    xTaskCreatePinnedToCore(mixer_task, "mixer", 4096, NULL, MIXER_PRIO, NULL, SYS_CORE);
     ESP_LOGI(TAG, "PCM5102 on I2S: LRCK %d, DIN %d, BCK %d, SCK %d", BOARD_I2S_WS, BOARD_I2S_DOUT, BOARD_I2S_BCLK, BOARD_I2S_MCLK);
 }
 
