@@ -45,3 +45,12 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 
 # The mixer keeps writing silence while flash writes hold the cache off
 CONFIG_I2S_ISR_IRAM_SAFE=y
+
+# Loadable apps are copied into PSRAM and run from there. ESP-IDF pre-configures the PSRAM heap as
+# read-write in the PMP, so the first instruction of an app faults (cause 1, at the entry point).
+# On this chip (P4 rev 1.x) the "External RAM" region is deliberately left without PMP entries, which
+# means all permissions - what the ELF loader needs. The internal SRAM IRAM/DRAM split stays protected.
+# Upstream says the same thing for its own ELF loader test on the P4 (elf_loader test: turn off the
+# IDRAM split so the load region is executable); only PSRAM is unprotected this way, not the OS's own
+# code in internal RAM.
+CONFIG_SPIRAM_PRE_CONFIGURE_MEMORY_PROTECTION=n
