@@ -1,3 +1,5 @@
+# JC1060P470-V2 (ESP32-P4): 4 MB app partition (the camera app needs the room), the rest of the
+# 16 MB flash is the FAT drive.
 # Name,   Type, SubType, Offset,   Size
 nvs,      data, nvs,     0x9000,   0x6000
 phy_init, data, phy,     0xf000,   0x1000

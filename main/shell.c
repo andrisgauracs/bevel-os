@@ -150,7 +150,8 @@ void shell_paint_desktop(gfx_t *g, const rect_t *area)
     }
 }
 
-// The time of day once the network or the clock chip has supplied it; the uptime until then.
+// The time of day once the network - or, on a board with a clock chip, the chip - has supplied it;
+// the uptime since power-on until then.
 static void fmt_clock(char *buf, int n)
 {
     if (clock_valid()) {

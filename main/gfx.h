@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "sdkconfig.h"
 #include "assets.h"
 
 typedef struct { int16_t x, y, w, h; } rect_t;
@@ -71,6 +72,14 @@ int gfx_label_w(const char *s, int font);
 int gfx_label(gfx_t *g, int x, int y, const char *s, int font, uint8_t fg, bool underline);
 char gfx_label_mnemonic(const char *s);                                   // lower-case letter or 0
 
-// Raw kernels
-void k_copy(uint8_t *dst, const uint8_t *src, int n);
+// Raw kernels. The ESP32-S3 has the PIE SIMD coprocessor (16 bytes per instruction), which is what
+// keeps the wide fills and copies fast enough for the VGA scan-out; the P4 has no such unit.
+#if CONFIG_IDF_TARGET_ESP32S3
+#define HAS_PIE 1
+void pie_copy16(void *dst, const void *src, int blocks);  // 16-byte aligned, counts in 16-byte blocks
+void pie_fill16(void *dst, int byte, int blocks);
+#else
+#define HAS_PIE 0
+#endif
+void k_copy(uint8_t *dst, const uint8_t *src, int n);  // picks PIE when both ends are 16-byte aligned
 void k_fill(uint8_t *dst, uint8_t c, int n);

@@ -191,7 +191,9 @@ void os_open_file(window_t *owner, const char *path)
 {
     const char *x = fs_ext(path);
     if (ext_in(x, "bmp")) app_viewer(path);
+#if BOARD_HAS_AUDIO
     else if (ext_in(x, "wav")) app_player(path);
+#endif
     else if (ext_in(x, "elf app")) os_run_elf(path);
     else if (ext_in(x, "txt md log ini cfg csv c h py sh json")) app_editor(path);
     else if (msgbox(owner, "Open", "Bevel OS does not know this kind of file.\nOpen it in the text editor?", MB_ASK, MB_YESNO) == ID_YES) app_editor(path);

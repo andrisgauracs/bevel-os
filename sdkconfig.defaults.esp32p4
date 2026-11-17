@@ -1,0 +1,47 @@
+# Guition JC1060P470-V2: ESP32-P4 rev 1.x, 16 MB flash, 32 MB PSRAM, 7" 1024x600 MIPI-DSI panel,
+# ESP32-C6 for Wi-Fi over SDIO. Hardware notes: the board's own docs folder (esp32_usb_cd_player).
+CONFIG_IDF_TARGET="esp32p4"
+
+# The boards seen so far carry pre-production ESP32-P4 chips (rev 1.x); ESP-IDF 6 defaults to rev >= 3.0
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# The board's flash is a BOYA chip (the generic driver works, but logs a warning at boot)
+CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y
+
+# PSRAM: 32 MB at 200 MHz
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# The DPI panel's DMA is restarted from the DSI interrupt every frame. Flash writes (the drive is a
+# FAT partition in the flash) disable the cache, and without this the screen flashes during them.
+CONFIG_LCD_DSI_ISR_CACHE_SAFE=y
+
+# Console, logs and the serial command channel on the USB-Serial-JTAG port (the board's "USB1" USB-C,
+# also used for flashing). The other USB-C port is the high-speed host port for keyboard and mouse.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Loadable apps are built against newlib (FILE, errno and ctype are part of what they import), so the
+# firmware uses the same C library.
+CONFIG_LIBC_NEWLIB=y
+
+# More than one hub level: the Logitech receiver sits behind the dock's hub
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
+
+# Storage: the FAT drive in the internal flash, plus the microSD slot mounted inside it at /disk/SD
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_esp32p4.csv"
+CONFIG_FATFS_VOLUME_COUNT=3
+
+# Wi-Fi through the ESP32-C6 (ESP-Hosted over SDIO 4-bit: CLK 18, CMD 19, D0-D3 14-17, C6 reset GPIO54;
+# the defaults of esp_hosted for the ESP32-P4)
+CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+# This is not an Espressif dev board, so select none: esp_hosted's own P4 defaults are the pins above
+CONFIG_ESP_HOSTED_P4_DEV_BOARD_NONE=y
+
+# HTTPS through the newer certificate bundle handling
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+
+# The mixer keeps writing silence while flash writes hold the cache off
+CONFIG_I2S_ISR_IRAM_SAFE=y

@@ -1,6 +1,6 @@
 // The drive: a wear-levelled FAT filesystem in the internal flash, mounted at /disk.
-// A microSD card, when one is in the slot, appears as the folder /disk/SD (a second FAT mount
-// inside the first), so Files, the file dialogs and loaded apps reach it without knowing about it.
+// On boards with a card slot, a microSD card in it appears as the folder /disk/SD (a second FAT
+// mount inside the first), so Files, the file dialogs and loaded apps reach it without knowing about it.
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -11,20 +11,24 @@
 #include "esp_app_desc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/sdmmc_host.h"
-#include "sdmmc_cmd.h"
-#include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "board.h"
 #include "comp.h"
 #include "input.h"
 #include "os.h"
+#if BOARD_HAS_SD
+#include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
+#endif
 
 static wl_handle_t s_wl = WL_INVALID_HANDLE;
 static bool s_mounted;
 
 static bool s_new_firmware;   // this firmware has not written its bundled files to the drive yet
 
+#if BOARD_HAS_SD
 static void sd_task(void *arg);
+#endif
 
 static void restore_file(const char *path, const char *data, size_t len, bool if_differs)
 {
@@ -67,7 +71,9 @@ bool storage_init(void)
         mkdir(DISK_ROOT "/Music", 0777);
         mkdir(DISK_ROOT "/Apps", 0777);
         mkdir(DISK_ROOT "/System", 0777);
+#if BOARD_HAS_SD
         mkdir(SD_ROOT, 0777);    // the folder the card is mounted on
+#endif
         // The bundled programs are kept in the firmware too and put back if missing or outdated.
         #define BUNDLED(sym, file) do { \
             extern const char sym##_start[] asm("_binary_" #sym "_elf_start"); \
@@ -84,21 +90,26 @@ bool storage_init(void)
             if (sf) { fwrite(stamp, 1, strlen(stamp), sf); fclose(sf); }
         }
         if (blank) {
+            restore_file(DISK_ROOT "/Pictures/Bevel.bmp", pic_start, pic_end - pic_start, false);
+#if BOARD_HAS_AUDIO
             extern const char wav_start[] asm("_binary_Chime_wav_start");
             extern const char wav_end[] asm("_binary_Chime_wav_end");
-            restore_file(DISK_ROOT "/Pictures/Bevel.bmp", pic_start, pic_end - pic_start, false);
             restore_file(DISK_ROOT "/Music/Chime.wav", wav_start, wav_end - wav_start, false);
+#endif
             FILE *m = fopen(DISK_ROOT "/System/samples-2", "wb");
             if (m) fclose(m);
         }
     }
+#if BOARD_HAS_SD
     xTaskCreatePinnedToCore(sd_task, "sdcard", 4096, NULL, 2, NULL, SYS_CORE);
+#endif
     return s_mounted;
 }
 
 bool storage_ok(void) { return s_mounted; }
 
 // ---------------------------------------------------------------- SD card
+#if BOARD_HAS_SD
 
 static sdmmc_card_t *s_card;
 static sd_pwr_ctrl_handle_t s_sd_pwr;
@@ -169,6 +180,10 @@ void os_sd_summary(char *buf, int n)
     os_fmt_size(b, sizeof(b), t);
     snprintf(buf, n, "%s free of %s", a, b);
 }
+#else
+bool storage_sd_ok(void) { return false; }
+void os_sd_summary(char *buf, int n) { snprintf(buf, n, "no card reader on this board"); }
+#endif
 
 bool storage_df(uint64_t *total, uint64_t *free_bytes)
 {
@@ -178,8 +193,10 @@ bool storage_df(uint64_t *total, uint64_t *free_bytes)
 
 bool storage_df_path(const char *path, uint64_t *total, uint64_t *free_bytes)
 {
+#if BOARD_HAS_SD
     size_t n = strlen(SD_ROOT);
     if (s_sd_mounted && !strncmp(path, SD_ROOT, n) && (path[n] == '/' || !path[n])) return esp_vfs_fat_info(SD_ROOT, total, free_bytes) == ESP_OK;
+#endif
     return storage_df(total, free_bytes);
 }
 
@@ -191,7 +208,9 @@ void os_shutdown_prepare(void)
 
 void storage_unmount(void)
 {
+#if BOARD_HAS_SD
     if (s_sd_mounted) { s_sd_mounted = false; esp_vfs_fat_sdcard_unmount(SD_ROOT, s_card); s_card = NULL; }
+#endif
     if (!s_mounted) return;
     esp_vfs_fat_spiflash_unmount_rw_wl(DISK_ROOT, s_wl);
     s_mounted = false;

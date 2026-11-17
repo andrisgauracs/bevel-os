@@ -30,9 +30,15 @@ void bevel_exit(void);
 
 void DG_Init(void)
 {
-    if (os->win_open("Doom", 640, 400) != 0) bevel_exit();
+    // The game is shown in the window's true-colour layer, so a board without one (the VGA devkit)
+    // cannot run it at all: say that before opening a window.
     s_px = os->canvas16(&s_cw, &s_ch);
-    if (!s_px || s_cw < 640 || s_ch < 400) bevel_exit();
+    if (!s_px || s_cw < 640 || s_ch < 400) {
+        os->msg("Doom", "This program needs a true-colour display, which this board does not have.", BV_MB_OK);
+        bevel_exit();
+        return;
+    }
+    if (os->win_open("Doom", 640, 400) != 0) bevel_exit();
 }
 
 void DG_DrawFrame(void)

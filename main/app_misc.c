@@ -41,9 +41,15 @@ void settings_load(void)
         else if (!strcmp(line, "mouse_speed") && v >= 1 && v <= 10) input_mouse_speed = v;
         else if (!strcmp(line, "repeat_delay") && v >= 100 && v <= 1000) input_repeat_delay = v;
         else if (!strcmp(line, "repeat_rate") && v >= 2 && v <= 50) input_repeat_rate = v;
+        // keys for controls this board does not have are skipped, so a settings file written on the
+        // other board still loads
+#if DISP_HAS_BACKLIGHT
         else if (!strcmp(line, "brightness") && v >= 10 && v <= 100) disp_set_brightness(v);
+#endif
+#if BOARD_HAS_AUDIO
         else if (!strcmp(line, "volume") && v >= 0 && v <= 100) audio_volume = v;
         else if (!strcmp(line, "sounds")) audio_system_sounds = v != 0;
+#endif
         else if (!strcmp(line, "zone")) {
             for (int i = 0; i < clock_zone_count(); i++) if (!strcmp(eq + 1, clock_zone_name(i))) clock_set_zone(i);
         }
@@ -56,9 +62,24 @@ bool settings_save(void)
     // temp file + rename: an unplugged cable never leaves half a settings file
     FILE *f = fopen(SETTINGS_FILE ".tmp", "wb");
     if (!f) return false;
-    fprintf(f, "desktop=%d\nmouse_speed=%d\nrepeat_delay=%d\nrepeat_rate=%d\nbrightness=%d\nvolume=%d\nsounds=%d\nzone=%s\n",
-            shell_desktop_color, input_mouse_speed, input_repeat_delay, input_repeat_rate, disp_get_brightness(), audio_volume,
-            audio_system_sounds, clock_zone_name(clock_zone()));
+    // a board only ever writes the settings its own controls have, so a card or a drive moved
+    // between the two boards carries no keys its new board would have to invent a control for
+    fprintf(f, "desktop=%d\nmouse_speed=%d\nrepeat_delay=%d\nrepeat_rate=%d\n"
+#if DISP_HAS_BACKLIGHT
+               "brightness=%d\n"
+#endif
+#if BOARD_HAS_AUDIO
+               "volume=%d\nsounds=%d\n"
+#endif
+               "zone=%s\n",
+            shell_desktop_color, input_mouse_speed, input_repeat_delay, input_repeat_rate,
+#if DISP_HAS_BACKLIGHT
+            disp_get_brightness(),
+#endif
+#if BOARD_HAS_AUDIO
+            audio_volume, audio_system_sounds,
+#endif
+            clock_zone_name(clock_zone()));
     if (fclose(f) != 0) return false;
     unlink(SETTINGS_FILE);
     return rename(SETTINGS_FILE ".tmp", SETTINGS_FILE) == 0;
@@ -81,10 +102,14 @@ static void set_apply(widget_t *w, int code)
     input_mouse_speed = ui_slider_get(s_sd.speed);
     input_repeat_delay = 100 + ui_slider_get(s_sd.delay) * 100;
     input_repeat_rate = ui_slider_get(s_sd.rate) * 5;
+#if DISP_HAS_BACKLIGHT
     disp_set_brightness(ui_slider_get(s_sd.bright) * 10);
+#endif
+#if BOARD_HAS_AUDIO
     int vol = ui_slider_get(s_sd.volume) * 5;
     audio_system_sounds = ui_checked(s_sd.sounds);
     if (vol != audio_volume) { audio_volume = vol; if (w == s_sd.volume) audio_chime(CHIME_INFO); }
+#endif
     int z = ui_listview_sel(s_sd.zones);
     if (z >= 0 && z != clock_zone()) clock_set_zone(z);
     // preview swatch
@@ -113,9 +138,13 @@ static void set_cancel(widget_t *b, int code)
     input_mouse_speed = s_sd.old_speed;
     input_repeat_delay = s_sd.old_delay;
     input_repeat_rate = s_sd.old_rate;
+#if DISP_HAS_BACKLIGHT
     disp_set_brightness(s_sd.old_bright);
+#endif
+#if BOARD_HAS_AUDIO
     audio_volume = s_sd.old_volume;
     audio_system_sounds = s_sd.old_sounds;
+#endif
     clock_set_zone(s_sd.old_zone);
     comp_invalidate_all();
     wm_destroy(s_set);
@@ -132,8 +161,13 @@ void app_settings(const char *arg)
     s_set = w;
     s_sd.old_color = shell_desktop_color; s_sd.old_speed = input_mouse_speed;
     s_sd.old_delay = input_repeat_delay; s_sd.old_rate = input_repeat_rate;
-    s_sd.old_bright = disp_get_brightness(); s_sd.old_volume = audio_volume;
-    s_sd.old_sounds = audio_system_sounds; s_sd.old_zone = clock_zone();
+#if DISP_HAS_BACKLIGHT
+    s_sd.old_bright = disp_get_brightness();
+#endif
+#if BOARD_HAS_AUDIO
+    s_sd.old_volume = audio_volume; s_sd.old_sounds = audio_system_sounds;
+#endif
+    s_sd.old_zone = clock_zone();
 
     ui_groupbox(w, 10, 8, 380, 124, "Desktop");
     ui_label(w, 22, 28, 100, 14, "&Colour:");
@@ -162,21 +196,29 @@ void app_settings(const char *arg)
     s_sd.rate->on_action = set_apply;
     ui_label(w, 350, 232, 30, 14, "Fast");
 
-    ui_groupbox(w, 400, 8, 230, 46, "Screen");
-    ui_label(w, 412, 30, 70, 14, "&Brightness:");
-    s_sd.bright = ui_slider(w, 484, 24, 136, 1, 10, (disp_get_brightness() + 5) / 10);
+    // The right-hand column holds only the groups this board has hardware for, stacked from the top
+    // so a board without a backlight or without sound has no hole where those groups would be. The
+    // clock group takes the rest of the column and ends level with the keyboard group on the left.
+    int gy = 8;
+#if DISP_HAS_BACKLIGHT
+    ui_groupbox(w, 400, gy, 230, 46, "Screen");
+    ui_label(w, 412, gy + 22, 70, 14, "&Brightness:");
+    s_sd.bright = ui_slider(w, 484, gy + 16, 136, 1, 10, (disp_get_brightness() + 5) / 10);
     s_sd.bright->on_action = set_apply;
-
-    ui_groupbox(w, 400, 60, 230, 72, "Sound");
-    ui_label(w, 412, 82, 70, 14, "&Volume:");
-    s_sd.volume = ui_slider(w, 484, 76, 136, 0, 20, audio_volume / 5);
+    gy += 52;
+#endif
+#if BOARD_HAS_AUDIO
+    ui_groupbox(w, 400, gy, 230, 72, "Sound");
+    ui_label(w, 412, gy + 22, 70, 14, "&Volume:");
+    s_sd.volume = ui_slider(w, 484, gy + 16, 136, 0, 20, audio_volume / 5);
     s_sd.volume->on_action = set_apply;
-    s_sd.sounds = ui_checkbox(w, 412, 106, 200, "S&ystem sounds", audio_system_sounds);
+    s_sd.sounds = ui_checkbox(w, 412, gy + 46, 200, "S&ystem sounds", audio_system_sounds);
     s_sd.sounds->on_action = set_apply;
-
-    ui_groupbox(w, 400, 138, 230, 116, "Clock");
-    ui_label(w, 412, 158, 100, 14, "Time &zone:");
-    s_sd.zones = ui_listview(w, 412, 174, 206, 70, zones_get);
+    gy += 78;
+#endif
+    ui_groupbox(w, 400, gy, 230, 254 - gy, "Clock");
+    ui_label(w, 412, gy + 20, 100, 14, "Time &zone:");
+    s_sd.zones = ui_listview(w, 412, gy + 36, 206, 208 - gy, zones_get);
     ui_listview_set_count(s_sd.zones, clock_zone_count());
     ui_listview_select(s_sd.zones, clock_zone());
     s_sd.zones->on_action = set_apply;

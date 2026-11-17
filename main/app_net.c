@@ -1,5 +1,5 @@
-// Network: shows the Ethernet link and joins a Wi-Fi network. The password is typed here, on the
-// computer's own keyboard.
+// Network: joins a Wi-Fi network, typing the password here on the computer's own keyboard. On a
+// board with a wired port (BOARD_HAS_ETH) the panel also shows that link.
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -12,7 +12,10 @@
 
 #define MAX_AP 20
 static window_t *s_win;
-static widget_t *s_list, *s_status, *s_eth, *s_scan_btn;
+static widget_t *s_list, *s_status, *s_scan_btn;
+#if BOARD_HAS_ETH
+static widget_t *s_eth;
+#endif
 static net_ap_t s_aps[MAX_AP];
 static char s_sig[MAX_AP][12];
 static int s_nap, s_timer;
@@ -42,11 +45,13 @@ static void refresh_status(void *arg)
     case NET_OFF: snprintf(t, sizeof(t), "Wi-Fi is off. Press Scan to look for networks."); break;
     default: snprintf(t, sizeof(t), s_scanning ? "Wi-Fi: looking for networks..." : "Wi-Fi: not connected."); break;
     }
+#if BOARD_HAS_ETH
     char e[120];
     if (st.eth_ip[0]) snprintf(e, sizeof(e), "Ethernet: connected at %d Mbit/s    address %s", st.eth_mbps, st.eth_ip);
     else if (st.eth_link) snprintf(e, sizeof(e), "Ethernet: cable connected, waiting for an address...");
     else snprintf(e, sizeof(e), st.eth_present ? "Ethernet: no cable." : "Ethernet: not available.");
     ui_set_text(s_eth, e);
+#endif
     ui_set_text(s_status, t);
 }
 
@@ -112,10 +117,17 @@ void app_network(const char *arg)
     window_t *w = wm_create("Network", 440, 282, WIN_DIALOG);
     w->icon = &icon16_computer;
     s_win = w;
-    s_eth = ui_label(w, 10, 10, 420, 14, "");
-    s_status = ui_label(w, 10, 30, 420, 14, "");
-    ui_label(w, 10, 52, 200, 14, "Wi-Fi &networks in range:");
-    s_list = ui_listview(w, 10, 68, 420, 170, net_get);
+    // The Ethernet line only exists on a board with a port; without it the list simply takes the row.
+    int y = 10;
+#if BOARD_HAS_ETH
+    s_eth = ui_label(w, 10, y, 420, 14, "");
+    y += 20;
+#endif
+    s_status = ui_label(w, 10, y, 420, 14, "");
+    y += 22;
+    ui_label(w, 10, y, 200, 14, "Wi-Fi &networks in range:");
+    y += 16;
+    s_list = ui_listview(w, 10, y, 420, 238 - y, net_get);
     static const char *const titles[] = {"Name", "Signal", "Security"};
     static const int widths[] = {250, 70, 80};
     ui_listview_columns(s_list, 3, titles, widths);

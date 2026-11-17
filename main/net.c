@@ -1,10 +1,11 @@
-// Networking: wired Ethernet, Wi-Fi and HTTP(S) GET.
+// Networking: Wi-Fi, wired Ethernet on boards that have a PHY, and HTTP(S) GET.
 //
-// Ethernet (the board's IP101GR PHY on the ESP32-P4's own MAC) is brought up at boot and needs no
-// setup: plug in a cable and DHCP does the rest. Wi-Fi comes from the ESP32-C6 on the module, which
-// runs Espressif's ESP-Hosted firmware and is driven through the usual esp_wifi calls; it is only
-// started when a network is saved or the user opens the Network panel. When both are connected,
-// Ethernet carries the traffic. Once any link has an address, the clock is set from the network.
+// Wi-Fi is this chip's own radio on the ESP32-S3; on the JC1060P470-V2 the esp_wifi calls are
+// forwarded to the ESP32-C6 on the module (ESP-Hosted). Either way the radio is only started when a
+// network is saved or the user opens the Network panel, so it costs no RAM otherwise.
+// Ethernet (an IP101GR PHY on the P4's own EMAC) is brought up at boot and needs no setup: plug in a
+// cable and DHCP does the rest, and it outranks Wi-Fi as the default route. Once any link has an
+// address, the clock is set from the network.
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -12,7 +13,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_wifi.h"
-#include "esp_eth.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_event.h"
@@ -25,20 +25,27 @@
 #include "net.h"
 #include "os.h"
 #include "fsutil.h"
+#if BOARD_HAS_ETH
+#include "esp_eth.h"
+#endif
 
 #define WIFI_FILE DISK_ROOT "/System/wifi.ini"
 
-static const char *TAG = "net";
+#if BOARD_HAS_ETH
+static const char *TAG = "net";   // the Ethernet log lines below are its only users
+#endif
 static bool s_base, s_started, s_sntp;
 static volatile int s_state = NET_OFF;
 static char s_ssid[33], s_ip[16];
 static int s_retries;
 static bool s_want;     // we want to be connected (retry on drops)
 
+#if BOARD_HAS_ETH
 static esp_eth_handle_t s_eth;
 static volatile bool s_eth_link;
 static char s_eth_ip[16];
 static int s_eth_mbps;
+#endif
 
 static void time_synced(struct timeval *tv) { clock_net_synced(); }
 
@@ -63,6 +70,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_retries = 0;
         s_state = NET_CONNECTED;
         got_address();
+#if BOARD_HAS_ETH
     } else if (base == ETH_EVENT && id == ETHERNET_EVENT_CONNECTED) {
         eth_speed_t speed = ETH_SPEED_10M;
         esp_eth_ioctl(s_eth, ETH_CMD_G_SPEED, &speed);
@@ -78,10 +86,11 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         snprintf(s_eth_ip, sizeof(s_eth_ip), IPSTR, IP2STR(&e->ip_info.ip));
         ESP_LOGI(TAG, "Ethernet address %s", s_eth_ip);
         got_address();
+#endif
     }
 }
 
-// TCP/IP stack and event loop, shared by both links.
+// TCP/IP stack and event loop, shared by the links this board has.
 static bool base_start(void)
 {
     if (s_base) return true;
@@ -91,12 +100,15 @@ static bool base_start(void)
     if (esp_netif_init() != ESP_OK) return false;
     esp_event_loop_create_default();
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_event, NULL);
+#if BOARD_HAS_ETH
     esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, on_event, NULL);
+#endif
     esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, on_event, NULL);
     s_base = true;
     return true;
 }
 
+#if BOARD_HAS_ETH
 static void eth_start(void)
 {
     eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
@@ -139,8 +151,15 @@ static void eth_start(void)
     esp_netif_attach(netif, esp_eth_new_netif_glue(s_eth));
     esp_eth_start(s_eth);
 }
+#endif
 
-bool net_online(void) { return s_eth_ip[0] || s_state == NET_CONNECTED; }
+bool net_online(void)
+{
+#if BOARD_HAS_ETH
+    if (s_eth_ip[0]) return true;
+#endif
+    return s_state == NET_CONNECTED;
+}
 
 bool net_start(void)
 {
@@ -164,17 +183,21 @@ void net_status(net_status_t *o)
     strlcpy(o->ssid, s_ssid, sizeof(o->ssid));
     strlcpy(o->ip, s_ip, sizeof(o->ip));
     if (s_state == NET_CONNECTED) { wifi_ap_record_t ap; if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) o->rssi = ap.rssi; }
+#if BOARD_HAS_ETH
     o->eth_present = s_eth != NULL;
     o->eth_link = s_eth_link;
     o->eth_mbps = s_eth_mbps;
     strlcpy(o->eth_ip, s_eth_ip, sizeof(o->eth_ip));
+#endif
 }
 
 void net_summary(char *buf, int n)
 {
-    if (s_eth_ip[0]) snprintf(buf, n, "Ethernet, %s", s_eth_ip);
-    else if (s_state == NET_CONNECTED) snprintf(buf, n, "Wi-Fi \"%s\", %s", s_ssid, s_ip);
-    else if (s_eth_link) snprintf(buf, n, "Ethernet, waiting for an address");
+#if BOARD_HAS_ETH
+    if (s_eth_ip[0]) { snprintf(buf, n, "Ethernet, %s", s_eth_ip); return; }
+    if (s_eth_link) { snprintf(buf, n, "Ethernet, waiting for an address"); return; }
+#endif
+    if (s_state == NET_CONNECTED) snprintf(buf, n, "Wi-Fi \"%s\", %s", s_ssid, s_ip);
     else snprintf(buf, n, "not connected");
 }
 
@@ -238,7 +261,11 @@ void net_disconnect(bool forget)
 
 static void boot_task(void *arg)
 {
-    if (base_start()) eth_start();
+    if (base_start()) {
+#if BOARD_HAS_ETH
+        eth_start();
+#endif
+    }
     int n;
     char *s = fs_read_all(WIFI_FILE, &n);
     if (s) {
@@ -280,7 +307,11 @@ static esp_err_t http_event(esp_http_client_event_t *e)
 const char *net_error_text(int code)
 {
     switch (code) {
-    case -1: return "There is no network connection. Plug in an Ethernet cable, or open Network from the Bevel menu to join a Wi-Fi network.";
+    case -1: return "There is no network connection. "
+#if BOARD_HAS_ETH
+                    "Plug in an Ethernet cable, or "
+#endif
+                    "open Network from the Bevel menu to join a Wi-Fi network.";
     case -2: return "The server could not be reached.";
     case -3: return "The page is too large for this computer.";
     case -4: return "Stopped.";
@@ -326,7 +357,7 @@ static int fetch_once(const char *url_in, char **body, int *len, char *ctype, in
         .buffer_size = 4096,
         .buffer_size_tx = 2048,
         .crt_bundle_attach = esp_crt_bundle_attach,
-        .user_agent = "Mozilla/5.0 (compatible; BevelBrowser/1.0; ESP32-P4)",
+        .user_agent = "Mozilla/5.0 (compatible; BevelBrowser/1.0; " OS_CHIP ")",
         .keep_alive_enable = false,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);

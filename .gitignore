@@ -1,5 +1,7 @@
-# ESP-IDF build output and component-manager downloads
+# ESP-IDF build output and component-manager downloads. One build directory per board is handy
+# (idf.py -B build-esp32s3 ...); the plain "build" one is what tools/flash.ps1 uses.
 build/
+build-*/
 managed_components/
 sdkconfig.old
 

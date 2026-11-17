@@ -1,6 +1,7 @@
-// Serial command channel on the board's USB-Serial-JTAG port ("USB1", also the log console and
-// the flashing port): screen dumps, input injection, stats and self-tests, so the OS can be driven
-// and checked without anyone at the keyboard.
+// Serial command channel on whichever port the board is wired to: the P4 board's USB-Serial-JTAG
+// port ("USB1", also the log console and the flashing port), the S3 board's UART0 COM port at
+// 2 Mbaud. Screen dumps, input injection, stats and self-tests, so the OS can be driven and checked
+// without anyone at the keyboard.
 // Commands are text lines; every command ends its output with a line "@@OK" (or "@@ERR ...").
 #include <stdio.h>
 #include <stdarg.h>
@@ -9,8 +10,13 @@
 #include <ctype.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "board.h"      // BOARD_CONSOLE_USB_JTAG: which port this board is wired to
+#if BOARD_CONSOLE_USB_JTAG
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
+#else
+#include "driver/uart.h"
+#endif
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -22,6 +28,7 @@
 
 static FILE *s_put;   // file being uploaded (putopen / putdata / putclose)
 
+#if BOARD_CONSOLE_USB_JTAG
 // Nothing is sent while no computer has the port open, so a missing listener never stalls the OS.
 static void out_bytes(const void *data, int n)
 {
@@ -32,6 +39,16 @@ static void out_bytes(const void *data, int n)
         p += k; n -= k;
     }
 }
+
+// Before a reboot: the port needs a moment to flush what is queued.
+static void out_drain(void) { vTaskDelay(pdMS_TO_TICKS(100)); }
+
+static bool in_byte(uint8_t *c) { return usb_serial_jtag_read_bytes(c, 1, portMAX_DELAY) == 1; }
+#else
+static void out_bytes(const void *data, int n) { uart_write_bytes(UART_NUM_0, (const char *)data, n); }
+static void out_drain(void) { uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100)); }
+static bool in_byte(uint8_t *c) { return uart_read_bytes(UART_NUM_0, c, 1, portMAX_DELAY) == 1; }
+#endif
 
 static void out(const char *s) { out_bytes(s, strlen(s)); }
 
@@ -46,18 +63,14 @@ void serial_printf(const char *fmt, ...)
     out_bytes(buf, n);
 }
 
-// The screen as the panel shows it (RGB565, overlays and pointer included), run-length encoded:
+// The screen as it looks (RGB565, pointer and overlays included), run-length encoded:
 // header "@@FB16 w h bytes", then (count, low byte, high byte) triplets.
 static void dump_fb(void *arg)
 {
     const int len = SCREEN_W * SCREEN_H;
-    bool shown;
-    disp_cursor_get(NULL, NULL, &shown);
-    if (arg && shown) disp_cursor_show(false);
     uint16_t *copy = heap_caps_malloc(len * 2, MALLOC_CAP_SPIRAM);
-    if (copy) memcpy(copy, disp_panel_fb(), len * 2);
-    if (arg && shown) disp_cursor_show(true);
     if (!copy) { out("@@ERR no memory\n"); return; }
+    disp_snapshot(copy, arg != NULL);
     size_t total = 0;
     for (int i = 0; i < len;) {
         int run = 1;
@@ -149,9 +162,21 @@ static void cmd_stat(void)
 {
     comp_stats_t c;
     comp_get_stats(&c, true);
+#if DISP_HAS_SCANOUT
+    disp_scanout_t v;
+    disp_get_scanout(&v, true);
+    serial_printf("vga: frames %u fills %u isr_avg %u.%u us isr_max %u us slack_min %d us late %u core %u copy %s\n",
+                  (unsigned)v.frames, (unsigned)v.fills, (unsigned)(v.isr_avg_us10 / 10), (unsigned)(v.isr_avg_us10 % 10),
+                  (unsigned)v.isr_max_us, (int)v.slack_min_us, (unsigned)v.late, (unsigned)v.isr_core,
+                  disp_get_copy_mode() ? "pie" : "memcpy");
+    serial_printf("comp: flushes %u pixels %u render %u us copy %u us wait %u us max_flush %u us\n",
+                  (unsigned)c.flushes, (unsigned)c.pixels, (unsigned)c.render_us, (unsigned)c.copy_us,
+                  (unsigned)c.wait_us, (unsigned)c.max_flush_us);
+#else
     serial_printf("comp: flushes %u pixels %u render %u us copy %u us max_flush %u us\n",
                   (unsigned)c.flushes, (unsigned)c.pixels, (unsigned)c.render_us, (unsigned)c.copy_us,
                   (unsigned)c.max_flush_us);
+#endif
     serial_printf("mem: internal free %u largest %u min %u | psram free %u | uptime %u ms\n",
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -202,10 +227,16 @@ static void handle_line(char *line)
         }
     } else if (!strcmp(line, "wheel")) {
         input_wheel(atoi(arg)); settle();
+#if DISP_HAS_SCANOUT
+    } else if (!strcmp(line, "copy")) {
+        disp_set_copy_mode(atoi(arg) & 1);
+    } else if (!strcmp(line, "race")) {
+        comp_beam_race = atoi(arg);
+#endif
     } else if (!strcmp(line, "redraw")) {
         ev_call_sync((void (*)(void *))comp_invalidate_all, NULL); settle();
     } else if (!strcmp(line, "reboot")) {
-        out("@@OK\n"); vTaskDelay(pdMS_TO_TICKS(100)); esp_restart();
+        out("@@OK\n"); out_drain(); esp_restart();
     } else if (!strcmp(line, "putopen")) {
         if (s_put) fclose(s_put);
         s_put = fopen(arg, "wb");
@@ -232,7 +263,7 @@ static void serial_task(void *unused)
     int n = 0;
     uint8_t c;
     for (;;) {
-        if (usb_serial_jtag_read_bytes(&c, 1, portMAX_DELAY) != 1) continue;
+        if (!in_byte(&c)) continue;
         if (c == '\r') continue;
         if (c == '\n') {
             line[n] = 0;
@@ -246,8 +277,12 @@ static void serial_task(void *unused)
 
 void serial_start(void)
 {
+#if BOARD_CONSOLE_USB_JTAG
     usb_serial_jtag_driver_config_t cfg = {.tx_buffer_size = 4096, .rx_buffer_size = 8192};
     usb_serial_jtag_driver_install(&cfg);
     usb_serial_jtag_vfs_use_driver();   // the log console shares the port through the same driver
+#else
+    uart_driver_install(UART_NUM_0, 4096, 0, 0, NULL, 0);
+#endif
     xTaskCreatePinnedToCore(serial_task, "serial", 6144, NULL, 6, NULL, 0);
 }

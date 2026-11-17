@@ -1,9 +1,11 @@
 // Compositor.
 //
 // Nothing ever draws straight into the framebuffer. Damage is collected as a short list of
-// rectangles; each one is painted strip by strip into a 32 KB scratch buffer in internal RAM
-// (fast, and overdraw there is cheap), then handed to the display once, which converts it to the
-// panel's RGB565. That gives flicker-free updates with the minimum possible PSRAM traffic.
+// rectangles; each one is painted strip by strip into a scratch buffer in internal RAM (fast, and
+// overdraw there is cheap), then handed to the display once. On the DSI panel that means converting
+// it to RGB565; on the VGA board the strip goes into PSRAM, and before it does the compositor waits
+// until the scan-out is not about to read those rows ("beam racing"). Either way: flicker-free
+// updates with the minimum possible PSRAM traffic.
 #include <string.h>
 #include "comp.h"
 #include "display.h"
@@ -18,6 +20,11 @@ static DRAM_ATTR rect_t s_dirty[MAX_DIRTY];
 static DRAM_ATTR int s_ndirty;
 static comp_paint_fn s_paint;
 static comp_stats_t s_stats;
+
+#if DISP_HAS_SCANOUT
+int comp_beam_race = 1;
+static uint32_t s_ns_per_px = 40;   // moving estimate of render+copy cost, for the beam race
+#endif
 
 void comp_init(comp_paint_fn paint) { s_paint = paint; s_ndirty = 0; }
 
@@ -68,6 +75,9 @@ int IRAM_ATTR comp_flush(void)
     int64_t t_start = esp_timer_get_time();
     uint32_t us_render = 0, us_copy = 0;
     int total_px = 0;
+#if DISP_HAS_SCANOUT
+    uint32_t us_wait = 0;
+#endif
 
     // top to bottom, so a multi-rectangle update appears in reading order
     for (int i = 1; i < s_ndirty; i++) {
@@ -83,8 +93,18 @@ int IRAM_ATTR comp_flush(void)
 
     for (int i = 0; i < n; i++) {
         int x0 = list[i].x, w = list[i].w;
+#if DISP_HAS_SCANOUT
+        // widen to a 16-pixel grid: aligned 128-bit stores and whole cache lines
+        x0 = list[i].x & ~15;
+        int x1 = (list[i].x + list[i].w + 15) & ~15;
+        if (x1 > SCREEN_W) x1 = SCREEN_W;
+        w = x1 - x0;
+#endif
         int y = list[i].y, y_end = list[i].y + list[i].h;
         int rows_max = SCRATCH_BYTES / w;
+#if DISP_HAS_SCANOUT
+        bool first = true;    // the beam race treats the first strip of an update differently
+#endif
         while (y < y_end) {
             int rows = y_end - y < rows_max ? y_end - y : rows_max;
             rect_t strip = {x0, y, w, rows};
@@ -93,13 +113,34 @@ int IRAM_ATTR comp_flush(void)
             int64_t t0 = esp_timer_get_time();
             s_paint(&g, &strip);
             int64_t t1 = esp_timer_get_time();
+#if DISP_HAS_SCANOUT
+            if (comp_beam_race) {
+                // First strip: the scan-out must stay clear of it for the whole remaining update, so
+                // the beam is ahead of us and we chase it down the screen. Later strips: just never
+                // overtake the beam.
+                int px = first ? w * (y_end - y) : w * rows;
+                us_wait += disp_wait_rows(y, y + rows, (int)((uint64_t)px * s_ns_per_px / 1000) + 20);
+            }
+#endif
             disp_put(x0, y, w, rows, s_scratch, w);
             us_render += (uint32_t)(t1 - t0);
             us_copy += (uint32_t)(esp_timer_get_time() - t1);
             total_px += w * rows;
             y += rows;
+#if DISP_HAS_SCANOUT
+            first = false;
+#endif
         }
     }
+
+#if DISP_HAS_SCANOUT
+    // The better the estimate of what a pixel costs, the less the beam race waits for nothing.
+    if (total_px > 2000) {
+        uint32_t ns = (uint32_t)((uint64_t)(us_render + us_copy) * 1000 / total_px);
+        s_ns_per_px = (s_ns_per_px * 3 + ns) / 4;
+    }
+    s_stats.wait_us += us_wait;
+#endif
 
     uint32_t total_us = (uint32_t)(esp_timer_get_time() - t_start);
     s_stats.flushes++;

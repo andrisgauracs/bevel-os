@@ -4,6 +4,9 @@
 // A mixer task runs at 44.1 kHz stereo. It mixes up to eight one-shot voices (system sounds, game
 // effects; any sample rate, resampled by stepping) and one stream (the sound player), applies the
 // master volume and writes to the I2S driver, whose blocking write paces the task.
+//
+// On a board with nothing to drive (BOARD_HAS_AUDIO = 0) the calls still exist and answer "no sound
+// here": the callers - the system sounds, the sound player, loaded programs - are the same code.
 #include <string.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
@@ -16,6 +19,13 @@
 #include "board.h"
 #include "audio.h"
 #include "os.h"
+
+// Saved settings, not hardware: every board has a volume and a switch for the system sounds, even
+// one with nothing to drive, so the Settings window and the settings file stay the same shape.
+int audio_volume = 30;
+int audio_system_sounds = 1;
+
+#if BOARD_HAS_AUDIO
 
 #define RATE        44100
 #define BLOCK       256
@@ -48,9 +58,6 @@ static struct {
     volatile bool open, paused;
     void *owner;
 } s_st;
-
-int audio_volume = 30;
-int audio_system_sounds = 1;
 
 static int16_t *s_chime[CHIME_COUNT];
 static int s_chime_len[CHIME_COUNT];
@@ -335,3 +342,27 @@ void audio_start(void)
     xTaskCreatePinnedToCore(mixer_task, "mixer", 4096, NULL, 12, NULL, SYS_CORE);
     ESP_LOGI(TAG, "PCM5102 on I2S: LRCK %d, DIN %d, BCK %d, SCK %d", BOARD_I2S_WS, BOARD_I2S_DOUT, BOARD_I2S_BCLK, BOARD_I2S_MCLK);
 }
+
+#else  // BOARD_HAS_AUDIO == 0: no codec, no amplifier, nothing to write samples to
+
+// The same answers as above, from a mixer that does not exist: a voice request fails, a stream
+// accepts nothing, the system sounds stay silent. Callers ask audio_ok() first and say "there is no
+// sound output here" when it answers false.
+void audio_start(void) { }
+bool audio_ok(void) { return false; }
+
+int audio_play(const void *pcm, int frames, int rate, int fmt, int vol, int pan, void *owner) { return 0; }
+void audio_voice_set(int id, int vol, int pan) { }
+bool audio_playing(int id) { return false; }
+void audio_stop(int id) { }
+void audio_stop_owner(void *owner) { }
+
+bool audio_stream_open(int rate, int channels, void *owner) { return false; }
+int audio_stream_write(const int16_t *pcm, int frames, int timeout_ms) { return 0; }
+int audio_stream_pending_ms(void) { return 0; }
+void audio_stream_pause(bool on) { }
+void audio_stream_close(void) { }
+
+void audio_chime(int which) { }
+
+#endif

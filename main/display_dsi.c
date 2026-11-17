@@ -188,7 +188,18 @@ void disp_present(int x, int y, int w, int h)
 }
 
 uint8_t *disp_fb(void) { return s_fb; }
-const uint16_t *disp_panel_fb(void) { return s_pfb; }
+
+// What the panel shows, copied out for a screen dump. The pointer is part of the panel framebuffer
+// (it is drawn during the conversion), so leaving it out means having it repainted first.
+void disp_snapshot(uint16_t *dst, bool hide_cursor)
+{
+    if (!s_pfb || !dst) return;
+    bool shown;
+    disp_cursor_get(NULL, NULL, &shown);
+    if (hide_cursor && shown) disp_cursor_show(false);
+    memcpy(dst, s_pfb, (size_t)SCREEN_W * SCREEN_H * sizeof(uint16_t));
+    if (hide_cursor && shown) disp_cursor_show(true);
+}
 
 // ---------------------------------------------------------------- pointer
 

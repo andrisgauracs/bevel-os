@@ -1,19 +1,26 @@
 // The clock. The system time comes from the network (SNTP) and is kept across power cycles by
 // the board's RX8025T real-time clock chip when its backup cell is fitted. Until one of the two
 // has supplied a time, the taskbar shows the uptime instead.
+//
+// A board with no clock chip (BOARD_HAS_RTC = 0) is the same code with the chip part left out: the
+// zone list and the network path are common, and the time simply never survives a power cycle.
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
 #include <sys/time.h>
-#include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "board.h"
 #include "os.h"
 
 static const char *TAG = "clock";
+
+#if BOARD_HAS_RTC
+#include "driver/i2c_master.h"
+
 static i2c_master_dev_handle_t s_rtc;
 static bool s_rtc_ok;
+#endif
 
 // A few common zones, as POSIX TZ strings (daylight saving included where it applies).
 static const struct { const char *name, *tz; } s_zones[] = {
@@ -54,6 +61,8 @@ void clock_set_zone(int i)
 bool clock_valid(void) { return time(NULL) > 1704067200; }   // after 2024-01-01: the time has been set
 
 // ---------------------------------------------------------------- RX8025T
+
+#if BOARD_HAS_RTC
 
 static uint8_t bcd(int v) { return (uint8_t)((v / 10) << 4 | (v % 10)); }
 static int unbcd(uint8_t b) { return (b >> 4) * 10 + (b & 15); }
@@ -105,6 +114,12 @@ void clock_init(void)
     }
 }
 
+#else  // BOARD_HAS_RTC == 0: no chip on the bus, so the time never survives a power cycle
+
+void clock_init(void) { }
+
+#endif
+
 void clock_net_synced(void)
 {
     time_t now = time(NULL);
@@ -112,7 +127,17 @@ void clock_net_synced(void)
     gmtime_r(&now, &tm);
     ESP_LOGI(TAG, "time from the network: %04d-%02d-%02d %02d:%02d:%02d UTC", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
              tm.tm_hour, tm.tm_min, tm.tm_sec);
+#if BOARD_HAS_RTC
     if (s_rtc_ok && !rtc_write(&tm)) ESP_LOGW(TAG, "could not set the clock chip");
+#endif
 }
 
-const char *clock_source(void) { return !clock_valid() ? "not set" : s_rtc_ok ? "network + RX8025T chip" : "network"; }
+const char *clock_source(void)
+{
+    if (!clock_valid()) return "not set";
+#if BOARD_HAS_RTC
+    return s_rtc_ok ? "network + RX8025T chip" : "network";
+#else
+    return "network";     // SNTP is the only thing this board can ask for the time
+#endif
+}

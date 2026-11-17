@@ -22,8 +22,14 @@
 #include <sys/stat.h>
 #include <sys/reent.h>
 #include "esp_attr.h"
+#if CONFIG_IDF_TARGET_ESP32P4
 #include "riscv/rvruntime-frames.h"
 #include "riscv/csr.h"
+#else
+#include "esp_ipc.h"
+#include "xtensa_api.h"
+#include "xtensa_context.h"
+#endif
 #include "display.h"
 #include "audio.h"
 #include "wm.h"
@@ -305,7 +311,7 @@ static void *api_alloc(int bytes)
 {
     ENTER_R(NULL);
     void *res = NULL;
-    if (bytes > 0 && bytes <= 16 * 1024 * 1024) {
+    if (bytes > 0 && bytes <= BOARD_APP_MEM_MAX) {
         mem_hdr_t *h = heap_caps_malloc(sizeof(mem_hdr_t) + bytes, MALLOC_CAP_SPIRAM);
         if (h) {
             h->size = bytes; h->magic = APP_MAGIC; h->prev = NULL; h->next = a->mem;
@@ -500,8 +506,9 @@ static int app_vfprintf(FILE *f, const char *fmt, va_list ap)
     return vfprintf(f, fmt, ap);
 }
 
-// Compiler support routines (64-bit division, double-precision arithmetic). The toolchain's libgcc is
-// not position-independent, so apps that need these import them from the OS instead of linking it.
+// Compiler support routines (64-bit division, double-precision arithmetic). The RISC-V toolchain's
+// libgcc is not position-independent, so apps built for the P4 import these from the OS instead of
+// linking libgcc; the Xtensa apps for the S3 link their own copy (tools/build_apps.sh).
 #define LIBGCC_LIST(X) X(__divdi3) X(__udivdi3) X(__moddi3) X(__umoddi3) X(__muldi3) X(__ashldi3) X(__lshrdi3) X(__ashrdi3) X(__clzsi2) X(__ctzsi2) X(__adddf3) X(__subdf3) X(__muldf3) X(__divdf3) X(__extendsfdf2) X(__truncdfsf2) X(__fixdfsi) X(__fixunsdfsi) X(__floatsidf) X(__floatunsidf) X(__floatdidf) X(__fixdfdi) X(__eqdf2) X(__nedf2) X(__ltdf2) X(__ledf2) X(__gtdf2) X(__gedf2) X(__unorddf2)
 #define X(n) extern void n(void);
 LIBGCC_LIST(X)
@@ -587,10 +594,17 @@ static void gui_app_crashed(void *arg)
     if (!a->used) return;
     char name[40], msg[200];
     strlcpy(name, a->name, sizeof(name));
+#if CONFIG_IDF_TARGET_ESP32P4
     static const char *const causes[] = {[0] = "a jump to an invalid address", [1] = "a jump to an invalid address",
         [2] = "an illegal instruction", [3] = "a breakpoint", [4] = "an unaligned memory access", [5] = "reading an invalid address",
         [6] = "an unaligned memory access", [7] = "writing to an invalid address"};
     const char *why = a->crash_cause < 8 && causes[a->crash_cause] ? causes[a->crash_cause] : "an error";
+#else
+    static const char *const causes[] = {[0] = "an illegal instruction", [2] = "a bad instruction address", [3] = "a memory access error",
+        [6] = "a division by zero", [9] = "an unaligned memory access", [20] = "a jump to an invalid address",
+        [28] = "reading an invalid address", [29] = "writing to an invalid address"};
+    const char *why = a->crash_cause < 30 && causes[a->crash_cause] ? causes[a->crash_cause] : "an error";
+#endif
     snprintf(msg, sizeof(msg), "%s has stopped because of %s (at 0x%08x, address 0x%08x).\n\nIt was closed. Everything else keeps running.",
              name, why, (unsigned)a->crash_pc, (unsigned)a->crash_addr);
     serial_printf("[app] %s crashed: cause %u pc %08x addr %08x\n", name, (unsigned)a->crash_cause, (unsigned)a->crash_pc, (unsigned)a->crash_addr);
@@ -607,6 +621,7 @@ static void app_crash_landing(void)
     for (;;) vTaskSuspend(NULL);
 }
 
+#if CONFIG_IDF_TARGET_ESP32P4
 // Every CPU exception that is not an interrupt passes through here (the linker wraps ESP-IDF's
 // xt_unhandled_exception, see main/CMakeLists.txt). A fault in an app's own code is turned into a
 // jump to the landing function; anything else goes on to the normal panic handler.
@@ -621,10 +636,36 @@ void IRAM_ATTR __wrap_xt_unhandled_exception(void *frame)
     a->crash_addr = RV_READ_CSR(mtval);
     f->mepc = (uint32_t)app_crash_landing;
 }
+#else
+// On the S3 the exception table is per core, so a handler is installed on each of them; a fault in
+// an app's own code jumps to the landing function, anything else goes on to the panic handler.
+static void app_exception(XtExcFrame *frame)
+{
+    extern void xt_unhandled_exception(XtExcFrame *frame);
+    app_t *a = xPortInIsrContext() ? NULL : cur_app();
+    if (!a || a->crashed || a->in_api) { xt_unhandled_exception(frame); return; }
+    a->crash_cause = frame->exccause;
+    a->crash_pc = frame->pc;
+    a->crash_addr = frame->excvaddr;
+    frame->pc = (uint32_t)app_crash_landing;
+    frame->ps &= ~(3u << 16);       // CALLINC = 0, so the landing function's ENTRY does not rotate the window
+    frame->lcount = 0;
+}
+
+static void install_handlers(void *arg)
+{
+    static const int causes[] = {0, 2, 3, 6, 9, 20, 28, 29};
+    for (int i = 0; i < (int)(sizeof(causes) / sizeof(causes[0])); i++) xt_set_exception_handler(causes[i], app_exception);
+}
+#endif
 
 void app_loader_init(void)
 {
     elf_set_symbol_resolver(app_resolver);
+#if CONFIG_IDF_TARGET_ESP32S3
+    install_handlers(NULL);                                     // this core
+    esp_ipc_call_blocking(1 - xPortGetCoreID(), install_handlers, NULL);   // and the other one
+#endif
 }
 
 void os_run_elf(const char *path)

@@ -7,6 +7,11 @@ in 64 colours through six resistors. It has overlapping windows, a taskbar, a fi
 editor, a picture viewer, a terminal, Wi-Fi with a text web browser, and apps loaded from its own
 drive as separate ELF files, including Snake and Doom.
 
+The same tree also builds for a second board: a Guition JC1060P470-V2 (ESP32-P4) with a 7-inch
+MIPI-DSI panel, touch, wired Ethernet and a card reader. Pick it with `idf.py set-target esp32p4`;
+[docs/PORT-JC1060P470-V2.md](docs/PORT-JC1060P470-V2.md) says what that port involved and what has
+not been tested on that board yet.
+
 The OS was written by an AI model, **Claude Fable 5.2**, working as a coding agent in Claude
 Code. The hardware bring-up before it (colour test, USB input, the 3D-printed box, and the brief
 for the OS) was also done with Claude in an earlier session. A human did the physical work
@@ -184,36 +189,46 @@ C and a little assembly). The full description is in [docs/OS-REPORT.md](docs/OS
   for framebuffer dumps (a PNG in 0.4 s), key and mouse injection, benchmarks and file upload.
   This is how the agent saw and tested the screen.
 
-### Flash layout (`partitions.csv`)
+### Flash layout (`partitions_esp32s3.csv`, or `partitions_esp32p4.csv` on the P4 board)
 
-| Name | Type | Offset | Size |
+| Name | Type | Offset | Size (S3 / P4) |
 |---|---|---|---|
 | nvs | data/nvs | 0x9000 | 24 KB |
 | phy_init | data/phy | 0xF000 | 4 KB |
-| factory | app | 0x10000 | 3 MB |
-| storage | data/fat | 0x310000 | 12 MB |
+| factory | app | 0x10000 | 3 MB / 4 MB |
+| storage | data/fat | 0x310000 / 0x410000 | 12 MB / just under 12 MB |
+
+The P4 board gets the bigger app partition because its build carries the camera app; its firmware
+also runs Wi-Fi through the on-board ESP32-C6, which needs room in the bootloader config.
 
 ## Building and flashing
 
-Requirements: [ESP-IDF **v5.5.3**](https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32s3/get-started/)
-(the version in `dependencies.lock`), target `esp32s3`. The checked-in `sdkconfig` and
-`sdkconfig.defaults` already select the target, 16 MB flash, octal PSRAM, the custom partition
-table and the 2 Mbaud console.
+Requirements: [ESP-IDF **v6.1**](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32p4/), the
+version both boards are built with here (the S3 machine was developed under v5.5). One tree, two
+targets:
 
 ```sh
 git clone https://github.com/andrisgauracs/bevel-os
 cd bevel-os
-. $HOME/esp/esp-idf/export.sh          # or wherever ESP-IDF v5.5.3 is installed
-idf.py build                            # downloads elf_loader and usb_host_hid on the first run
-idf.py -p PORT -b 921600 flash          # PORT = the board's COM port, e.g. /dev/cu.usbmodem... or /dev/ttyACM0
+. $HOME/esp/esp-idf/export.sh          # or wherever ESP-IDF v6.1 is installed
+idf.py set-target esp32s3              # or: idf.py set-target esp32p4
+idf.py build                           # downloads elf_loader and usb_host_hid on the first run
+idf.py -p PORT flash                   # PORT = the board's COM port
 ```
 
-Do not run `idf.py set-target`; it would regenerate `sdkconfig`. `idf.py flash` writes the
-bootloader, the partition table and the app. The `storage` partition is not flashed: the
-firmware formats it on first boot and fills it with the bundled files.
+On Windows, `tools\flash.ps1 -Target esp32p4 -Port COM13` does build, flash and the serial daemon in
+one go. The S3 board's console is UART0 at 2 Mbaud; the P4 board talks over its USB-Serial-JTAG port.
 
-The prebuilt apps in `disk/Apps/*.elf` are embedded into the firmware, so the build works without
-building them first.
+`sdkconfig.defaults` holds what both boards share, and `sdkconfig.defaults.esp32s3` /
+`sdkconfig.defaults.esp32p4` add what differs (PSRAM speed, the console, the partition table, Wi-Fi
+through the C6 on the P4). `idf.py set-target` rebuilds `sdkconfig` from those two files, so
+switching boards is a normal thing to do; the `sdkconfig` in the tree simply says which board was
+configured last. The `storage` partition is not flashed: the firmware formats it on first boot and
+fills it with the bundled files.
+
+The prebuilt apps in `disk/Apps/esp32s3/` and `disk/Apps/esp32p4/` are embedded into the firmware, so
+the build works without building them first. `tools/build_apps.sh esp32s3|esp32p4` and
+`tools/build_doom.sh esp32s3|esp32p4` rebuild them for the chosen chip.
 
 ### The serial tool
 
@@ -230,9 +245,10 @@ python3 tools/bv.py put local.txt /disk/Documents/local.txt   # copy a file to t
 python3 tools/bv.py quit                             # release the port before flashing
 ```
 
-The helper scripts (`tools/flash.sh`, `tools/build_apps.sh`, `tools/build_doom.sh`, ...) are zsh
-scripts written for the development Mac: they source ESP-IDF from `~/esp/esp-idf` and use the
-BSD `stat -f`. On Linux, adjust those two things.
+`tools/flash.sh`, `tools/build.sh`, `tools/fetch_doom.sh` and the test scripts came from the Mac the
+S3 machine was developed on (zsh, ESP-IDF sourced from `~/esp/esp-idf`, BSD `stat -f`); on Linux,
+adjust those. On Windows the build-flash-monitor loop is `tools\flash.ps1`, and the two app build
+scripts run under bash in a shell where ESP-IDF is active.
 
 ## Apps and files
 
@@ -240,24 +256,26 @@ An app is one C file that includes `apps/bevel.h` and exports
 `int app_main(const bevel_api_t *os, const char *arg)`. See `apps/Hello.c` and `apps/Snake.c`.
 
 ```sh
-tools/build_apps.sh                                  # apps/*.c -> disk/Apps/*.elf
-python3 tools/bv.py put disk/Apps/Snake.elf /disk/Apps/Snake.elf
+tools/build_apps.sh esp32s3               # apps/*.c -> disk/Apps/esp32s3/*.elf (or: esp32p4)
+python3 tools/bv.py put disk/Apps/esp32s3/Snake.elf /disk/Apps/Snake.elf
 ```
 
-Or rebuild and flash the firmware, which embeds `disk/Apps/*.elf` and writes them to the drive on
-the next boot. Run an app from Files, the Bevel menu (Programs), or the Terminal (`run Snake`).
+Or rebuild and flash the firmware, which embeds the four programs of whichever board you are
+building and writes them to the drive on the next boot. Run an app from Files, the Bevel menu
+(Programs), or the Terminal (`run Snake`).
 
 ## Doom
 
 Doom is a loadable app built from [doomgeneric](https://github.com/ozkl/doomgeneric) (GPL v2,
 included in `third_party/doomgeneric/`) and the platform layer `apps/doom/doom_bevel.c`. It
-renders 320x200 in 256 colours and is shown at 640x400, using each game pixel's four screen
-pixels for a 2x2 dither into the 64-colour palette. Keyboard only, no sound (the board has no
-audio output).
+renders 320x200 in 256 colours and is shown at 640x400. On the S3 board each game pixel becomes
+a 2x2 block dithered into the 64-colour palette, keyboard only, no sound (that board has no audio
+output); on the P4 board the game's own palette goes straight into the window's true-colour layer
+and the sound effects go to the OS mixer - which nobody has heard on that board yet.
 
-`Doom.elf` is already in `disk/Apps/` and in the firmware. The game data is not in this
-repository. `tools/fetch_doom.sh` downloads the shareware `doom1.wad` v1.9 from a third-party
-GitHub mirror,
+`Doom.elf` is already in `disk/Apps/esp32s3/` and `disk/Apps/esp32p4/`, and in both firmwares. The
+game data is not in this repository. `tools/fetch_doom.sh` downloads the shareware `doom1.wad` v1.9
+from a third-party GitHub mirror,
 [github.com/Akbar30Bill/DOOM_wads](https://github.com/Akbar30Bill/DOOM_wads), and checks its MD5
 (`f0cefca49926d00903cf57551d901abe`). Any shareware v1.9 `doom1.wad` with that checksum works;
 put it at `third_party/wad/doom1.wad` and the script skips the download. Then copy it to the
@@ -268,7 +286,7 @@ tools/fetch_doom.sh                                  # downloads third_party/wad
 python3 tools/bv.py put third_party/wad/doom1.wad /disk/Apps/doom1.wad
 ```
 
-To rebuild `Doom.elf` from source: `tools/build_doom.sh`.
+To rebuild `Doom.elf` from source: `tools/build_doom.sh esp32s3` or `tools/build_doom.sh esp32p4`.
 
 ## Limitations
 
@@ -331,18 +349,23 @@ was given is [docs/OS-BUILD-PROMPT.md](docs/OS-BUILD-PROMPT.md).
 
 ```
 main/            the OS: video, compositor, window manager, toolkit, shell, apps, storage,
-                 USB input, Wi-Fi, browser, serial channel
+                 USB input, Wi-Fi, browser, serial channel. board.h says which board is being built;
+                 display_dsi.c is the P4 panel, display_vga.c plus vga.c the S3 scan-out
 main/assets/     fonts, icons and cursors as C arrays (generated by tools/assets/gen_assets.py)
 apps/            loadable apps and the app API header (bevel.h); apps/doom/ is the Doom port
-disk/            files the firmware embeds and writes to the drive (Apps/*.elf, Welcome.txt, Bevel.bmp)
-tools/           bv.py serial tool, build/flash scripts, tests (kbtest.py, powercut.py), asset sources
+disk/            files the firmware embeds and writes to the drive (Apps/esp32s3/ and Apps/esp32p4/
+                 hold the prebuilt ELF programs, plus Welcome.txt, Bevel.bmp and the chime)
+tools/           bv.py serial tool, build/flash scripts (they take a target), tests (kbtest.py,
+                 powercut.py), asset sources
 third_party/     doomgeneric (GPL v2); the Doom WAD is fetched, not committed
 enclosure/       Blender scripts, STLs and renders for the 3D-printed box
 captures/        framebuffer screenshots from the real board
-docs/            design notes, performance log, hardware notes, the build brief, session summaries
+docs/            design notes, performance log, hardware notes, the build brief, session summaries,
+                 and the port status for the P4 board
 INTERVENTIONS.md every manual action by the human
-partitions.csv   flash layout
-sdkconfig.defaults, sdkconfig   ESP-IDF configuration
+partitions_esp32s3.csv, partitions_esp32p4.csv   flash layout, one per board
+sdkconfig.defaults and sdkconfig.defaults.esp32s3 / .esp32p4   the configuration both boards share
+                 and what each adds; sdkconfig itself is what the last `idf.py set-target` wrote
 ```
 
 Deep dives: [docs/OS-REPORT.md](docs/OS-REPORT.md) (what was built),
@@ -354,12 +377,12 @@ Deep dives: [docs/OS-REPORT.md](docs/OS-REPORT.md) (what was built),
 Bevel OS is released under the [MIT licence](LICENSE).
 
 Doom is the exception: `third_party/doomgeneric/` is GPL v2, so `apps/doom/` and the built
-`disk/Apps/Doom.elf` are distributed under the GPL v2 as well. `Doom.elf` is a separate program
-that the OS loads from the drive; the firmware also carries a copy of it so it can be restored to
-the drive. If you distribute firmware images that include `Doom.elf`, the GPL's source
-requirement applies to that part, and all of that source is in this repository. To build without
-Doom, remove `Doom.elf` from `EMBED_FILES` in `main/CMakeLists.txt` and the `BUNDLED(Doom, ...)`
-line in `main/storage.c`.
+`disk/Apps/esp32s3/Doom.elf` and `disk/Apps/esp32p4/Doom.elf` are distributed under the GPL v2 as
+well. `Doom.elf` is a separate program that the OS loads from the drive; the firmware also carries a
+copy of it so it can be restored to the drive. If you distribute firmware images that include
+`Doom.elf`, the GPL's source requirement applies to that part, and all of that source is in this
+repository. To build without Doom, remove the `"${APP_DIR}/Doom.elf"` line from the `EMBEDDED` list
+in `main/CMakeLists.txt` and the `BUNDLED(Doom, ...)` line in `main/storage.c`.
 
 The Doom shareware data file (`doom1.wad`, id Software) is not included. The ESP-IDF components
 `elf_loader` and `usb_host_hid` (Apache-2.0) are downloaded by the component manager at build time.

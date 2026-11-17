@@ -2,6 +2,8 @@
 #include "board.h"
 #include "esp_log.h"
 
+#if BOARD_HAS_I2C
+
 static i2c_master_bus_handle_t s_i2c;
 
 i2c_master_bus_handle_t board_i2c(void)
@@ -22,3 +24,5 @@ i2c_master_bus_handle_t board_i2c(void)
     }
     return s_i2c;
 }
+
+#endif  // BOARD_HAS_I2C

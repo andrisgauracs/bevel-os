@@ -43,7 +43,13 @@ static void sys_paint(widget_t *w, gfx_t *g)
     labels[n] = "Flash:"; snprintf(vals[n++], 64, "%u MB", (unsigned)(flash >> 20));
     labels[n] = "Drive:"; os_disk_summary(vals[n++], 64);
     labels[n] = "SD card:"; os_sd_summary(vals[n++], 64);
-    labels[n] = "Display:"; snprintf(vals[n++], 64, "%d x %d DSI panel, 64 colours + overlays", SCREEN_W, SCREEN_H);
+    labels[n] = "Display:";
+#if DISP_HAS_OVERLAYS
+    snprintf(vals[n++], 64, "%d x %d DSI panel, 64 colours + overlays", SCREEN_W, SCREEN_H);
+#else
+    // no true-colour layers on the VGA scan-out: the 64 colours are all there is
+    snprintf(vals[n++], 64, "%d x %d VGA monitor, 64 colours", SCREEN_W, SCREEN_H);
+#endif
     labels[n] = "Network:"; net_summary(vals[n++], 64);
     labels[n] = "Uptime:"; snprintf(vals[n++], 64, "%u:%02u:%02u", (unsigned)(up / 3600), (unsigned)(up / 60 % 60), (unsigned)(up % 60));
     labels[n] = "Screen updates:"; snprintf(vals[n++], 64, "%u per second", (unsigned)wm_fps());

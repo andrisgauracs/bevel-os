@@ -207,6 +207,6 @@ direct_dependencies:
 - espressif/usb
 - espressif/usb_host_hid
 - idf
-manifest_hash: a19464bc3c82b9a393018cd14a3cd9e9c65b25562a9e5fabf104d7bb7f4c8fb0
+manifest_hash: 287685053ef5febb4225e8cd6157d7397117a41b32131d489b0320cfdefab5a7
 target: esp32p4
 version: 3.0.0

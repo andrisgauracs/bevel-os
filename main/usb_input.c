@@ -1,6 +1,7 @@
-// USB host HID input on the board's high-speed USB-C port (the ESP32-P4's USB 2.0 OTG controller).
-// Report descriptors are parsed, so keyboards, relative mice and absolute pointers (KVMs, tablets)
-// all work, with or without report IDs.
+// USB host HID input on the board's host port: the ESP32-P4's high-speed USB 2.0 OTG controller and
+// the dock plugged into it, or the ESP32-S3's full-speed controller on GPIO19/20 behind a USB-C
+// breakout (docs/HANDOFF-AMENDMENT-USB.md). Report descriptors are parsed, so keyboards, relative
+// mice and absolute pointers (KVMs, tablets) all work, with or without report IDs.
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -9,13 +10,16 @@
 #include "esp_log.h"
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
-#include "soc/usb_dwc_struct.h"
 #include "input.h"
 #include "display.h"
 #include "os.h"
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "soc/usb_dwc_struct.h"
+#endif
 
 static const char *TAG = "usb";
 
+#if CONFIG_IDF_TARGET_ESP32P4
 // The host port is the ESP32-P4's high-speed controller, but ESP-IDF's host stack has no transaction
 // translator support: a keyboard or mouse (low/full speed) behind a high-speed hub is refused
 // ("Connected device is FS, transaction translator (TT) is not supported"). Keyboards and mice are
@@ -31,6 +35,10 @@ static inline void force_full_speed(void)
     if (!USB_DWC_HS.hcfg_reg.fslssupp) USB_DWC_HS.hcfg_reg.fslssupp = 1;
 #endif
 }
+#else
+// The S3's controller only runs full speed, so there is nothing to force.
+static inline void force_full_speed(void) { }
+#endif
 
 enum { F_KEY_MODS, F_KEY_ARRAY, F_BUTTONS, F_X, F_Y, F_WHEEL };
 typedef struct {
@@ -207,9 +215,11 @@ static void handle_report(iface_t *it, const uint8_t *data, size_t len)
             else {
                 int32_t range = f->lmax - f->lmin;
                 if (range <= 0) break;
-                int span = f->kind == F_X ? SCREEN_W : SCREEN_H;
+                // An absolute pointer covers what its capture device sees of the picture; on the VGA
+                // board that is not the whole scan-out line (display.h: POINTER_SPAN_X).
+                int span = f->kind == F_X ? POINTER_SPAN_X : SCREEN_H;
                 int p = (int)(((int64_t)(v - f->lmin) * span) / (range + 1));
-                if (f->kind == F_X) ax = p; else ay = p;
+                if (f->kind == F_X) ax = p - POINTER_OFFS_X; else ay = p;
                 have_abs = true;
             }
             break;

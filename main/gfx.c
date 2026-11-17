@@ -27,8 +27,38 @@ void rect_union(rect_t *out, const rect_t *a, const rect_t *b)
 
 // ---------------------------------------------------------------- kernels
 
+#if HAS_PIE
+// 128-bit PIE moves: the VGA scan-out reads the framebuffer straight out of PSRAM, so filling it
+// fast enough is what decides whether the picture underruns (docs/PERF.md).
+void IRAM_ATTR k_copy(uint8_t *dst, const uint8_t *src, int n)
+{
+    if (n >= 64 && (((uintptr_t)dst ^ (uintptr_t)src) & 15) == 0) {
+        int head = (16 - ((uintptr_t)dst & 15)) & 15;
+        if (head) { memcpy(dst, src, head); dst += head; src += head; n -= head; }
+        int blocks = n >> 4;
+        pie_copy16(dst, src, blocks);
+        dst += blocks << 4; src += blocks << 4; n &= 15;
+    }
+    if (n) memcpy(dst, src, n);
+}
+
+void IRAM_ATTR k_fill(uint8_t *dst, uint8_t c, int n)
+{
+    if (n >= 64) {
+        int head = (16 - ((uintptr_t)dst & 15)) & 15;
+        if (head) { memset(dst, c, head); dst += head; n -= head; }
+        int blocks = n >> 4;
+        pie_fill16(dst, c, blocks);
+        dst += blocks << 4; n &= 15;
+    }
+    // short tail / short runs
+    while (n >= 4) { uint32_t v = c * 0x01010101u; memcpy(dst, &v, 4); dst += 4; n -= 4; }
+    while (n-- > 0) *dst++ = c;
+}
+#else
 void IRAM_ATTR k_copy(uint8_t *dst, const uint8_t *src, int n) { memcpy(dst, src, n); }
 void IRAM_ATTR k_fill(uint8_t *dst, uint8_t c, int n) { memset(dst, c, n); }
+#endif
 
 // ---------------------------------------------------------------- context
 

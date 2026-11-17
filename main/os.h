@@ -5,10 +5,11 @@
 #include <stddef.h>
 #include "gfx.h"
 #include "theme.h"
+#include "board.h"
 
 #define OS_NAME "Bevel OS"
 #define OS_VERSION "1.0"
-#define OS_CHIP "ESP32-P4"
+#define OS_CHIP BOARD_CHIP
 
 // Which core runs what. The GUI task (window manager, compositor, built-in apps) lives on
 // GUI_CORE; USB, SD card, serial and loaded apps live on the other one.
@@ -36,8 +37,10 @@ bool os_task_kill(int task_id);             // false if task_id is not a loaded 
 
 // storage.c
 #define DISK_ROOT "/disk"
+#if BOARD_HAS_SD
 #define SD_ROOT DISK_ROOT "/SD"            // where a microSD card appears
-bool storage_sd_ok(void);
+#endif
+bool storage_sd_ok(void);                  // false on boards without a card reader
 bool storage_init(void);
 bool storage_ok(void);
 bool storage_df(uint64_t *total, uint64_t *free_bytes);
@@ -45,8 +48,11 @@ bool storage_df_path(const char *path, uint64_t *total, uint64_t *free_bytes);  
 void storage_unmount(void);
 void os_fmt_size(char *buf, int n, uint64_t bytes);
 
-// main.c
-extern volatile bool os_c6_link_up;       // ESP-Hosted has its SDIO link to the ESP32-C6 running
+#if BOARD_HAS_WIFI_REMOTE
+// main.c: ESP-Hosted has its SDIO link to the ESP32-C6 running. The card slot and the C6 share one
+// SDMMC controller, so the card task waits for this before touching the slot.
+extern volatile bool os_c6_link_up;
+#endif
 
 // clock.c
 void clock_init(void);                      // reads the clock chip, if there is one

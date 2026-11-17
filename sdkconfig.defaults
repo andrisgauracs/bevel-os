@@ -1,27 +1,19 @@
-# Guition JC1060P470-V2: ESP32-P4 rev 1.x, 16 MB flash, 32 MB PSRAM, 7" 1024x600 MIPI-DSI panel,
-# ESP32-C6 for Wi-Fi over SDIO. Hardware notes: docs/JC1060P470-V2.md
-CONFIG_IDF_TARGET="esp32p4"
-
-# The boards seen so far carry pre-production ESP32-P4 chips (rev 1.x); ESP-IDF 6 defaults to rev >= 3.0
-CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
-CONFIG_ESP32P4_REV_MIN_100=y
+# Bevel OS builds for two boards. Settings the two have in common are here; board-specific ones
+# live in sdkconfig.defaults.esp32s3 (ESP32-S3 devkit, resistor DAC into a VGA monitor) and
+# sdkconfig.defaults.esp32p4 (Guition JC1060P470-V2, 7" MIPI-DSI panel).
+#
+# Choose the board with:   idf.py set-target esp32s3      or      idf.py set-target esp32p4
+# The sdkconfig file follows whichever target was set last; the defaults files above fully
+# determine it, so deleting sdkconfig and configuring again gives a clean board configuration.
 
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-# The board's flash is a BOYA chip (the generic driver works, but logs a warning at boot)
-CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y
 
-# PSRAM: 32 MB at 200 MHz
+# Both boards have PSRAM (8 MB octal on the S3, 32 MB on the P4); speed and mode are per board.
 CONFIG_SPIRAM=y
-CONFIG_IDF_EXPERIMENTAL_FEATURES=y
-CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
-# skip the 32 MB memory test at boot
+# skip the memory test at boot (saves about a second)
 CONFIG_SPIRAM_MEMTEST=n
-
-# The DPI panel's DMA is restarted from the DSI interrupt every frame. Flash writes (the drive is a
-# FAT partition in the flash) disable the cache, and without this the screen flashes during them.
-CONFIG_LCD_DSI_ISR_CACHE_SAFE=y
 
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_FREERTOS_HZ=1000
@@ -29,42 +21,22 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 
-# Console, logs and the serial command channel on the USB-Serial-JTAG port (the board's "USB1" USB-C,
-# also used for flashing). The other USB-C port is the high-speed host port for keyboard and mouse.
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
-CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
-
-# Loadable apps are built against newlib (FILE, errno and ctype are part of what they import), so the
-# firmware uses the same C library.
-CONFIG_LIBC_NEWLIB=y
-
-# USB host: hubs, composite keyboards with large descriptors, tolerant reset timing
+# USB host: keyboard and mouse, through a hub or splitter. Composite keyboards have a large
+# configuration descriptor, and some hubs do not answer the first request without patient timing.
 CONFIG_USB_HOST_HUBS_SUPPORTED=y
-CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
 CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048
 CONFIG_USB_HOST_DEBOUNCE_DELAY_MS=500
 CONFIG_USB_HOST_RESET_HOLD_MS=60
 CONFIG_USB_HOST_RESET_RECOVERY_MS=120
 CONFIG_USB_HOST_SET_ADDR_RECOVERY_MS=30
 
-# Storage: 12 MB FAT drive in the internal flash, plus the microSD slot
+# The drive: a wear-levelled FAT filesystem in the internal flash (partition table per board)
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=64
-CONFIG_FATFS_VOLUME_COUNT=3
 CONFIG_WL_SECTOR_SIZE_4096=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 
-# Wi-Fi through the ESP32-C6 (ESP-Hosted over SDIO 4-bit: CLK 18, CMD 19, D0-D3 14-17, C6 reset GPIO54;
-# the defaults of esp_hosted for the ESP32-P4)
-CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
-CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
-
-# Network and HTTPS for the browser
+# Network and HTTPS for the browser: keep their buffers out of the scarce internal RAM
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
-
-# The mixer keeps writing silence while flash writes hold the cache off
-CONFIG_I2S_ISR_IRAM_SAFE=y

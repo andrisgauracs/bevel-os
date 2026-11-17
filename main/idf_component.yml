@@ -1,4 +1,6 @@
 ## IDF Component Manager Manifest File
+## One manifest for both targets: the JC1060P470-V2 (ESP32-P4) components carry a "target" rule so
+## an ESP32-S3 build does not pull them in.
 dependencies:
   idf:
     version: '>=6.0'
@@ -7,9 +9,23 @@ dependencies:
   espressif/usb_host_hid: ^1.0
   # loadable apps
   espressif/elf_loader: "*"
-  # display panel and touch controller of the JC1060P470-V2
-  espressif/esp_lcd_jd9165: ^2.0.0
-  espressif/esp_lcd_touch_gt911: ^1.2.0
+
+  # --- the JC1060P470-V2 (ESP32-P4) only ---
+  # display panel and touch controller of the board
+  espressif/esp_lcd_jd9165:
+    version: ^2.0.0
+    rules:
+      - if: target == esp32p4
+  espressif/esp_lcd_touch_gt911:
+    version: ^1.2.0
+    rules:
+      - if: target == esp32p4
   # Wi-Fi: the esp_wifi API is forwarded to the ESP32-C6 on the module over SDIO
-  espressif/esp_wifi_remote: ^1.6.0
-  espressif/esp_hosted: ^3.0.0
+  espressif/esp_wifi_remote:
+    version: ^1.6.0
+    rules:
+      - if: target == esp32p4
+  espressif/esp_hosted:
+    version: ^3.0.0
+    rules:
+      - if: target == esp32p4

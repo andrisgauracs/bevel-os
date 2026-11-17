@@ -23,12 +23,12 @@
 - Serial commands (firmware): D dump framebuffer, P test pattern, W/K/R/G/B solid fill, 0-4 test modes.
   Tools: tools/fbdump.py, tools/serbridge.py, tools/cycle_modes.py, tools/serlog.py.
 - OS session (2026-11-12): the OS is "Bevel OS". No SD card (user decision): files live on a FAT
-  partition in flash (`storage`, 12 MB, mounted at /disk; see partitions.csv).
+  partition in flash (`storage`, 12 MB, mounted at /disk; see partitions_esp32s3.csv).
 - Console and command channel run at 2 Mbaud (CONFIG_ESP_CONSOLE_UART_CUSTOM). The old single-letter
   commands are gone except `D`; use `tools/bv.py` (daemon holds the port) and `tools/bvx.sh`.
 - Video timing is still 26.67 MHz / H total 848, but the porches are now 36 front / 70 back so the
   picture is centred in a capture that expects standard timing. An absolute pointer (JetKVM) is
-  mapped with that in mind (VGA_ABS_SPAN_X in main/vga.h).
+  mapped with that in mind (POINTER_SPAN_X / POINTER_OFFS_X in main/display.h).
 - JetKVM USB: enumerates as keyboard + absolute pointer + relative mouse + a vendor interface.
   Browser automation does not send real Shift presses to it; use the JetKVM "Paste text" box to
   test capitals.
