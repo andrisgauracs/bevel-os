@@ -69,6 +69,7 @@ void input_mouse_pos(int *x, int *y);
 uint8_t input_mods(void);
 uint8_t input_buttons(void);
 bool input_mouse_seen(void);                      // true once any mouse activity happened
+void input_pointer_frozen(bool frozen);           // drop pointer input (boot splash owns the screen)
 
 // Settings
 extern int input_mouse_speed;   // 1..10, 5 = 1:1

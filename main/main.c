@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "os.h"
+#include "boot.h"
 #include "display.h"
 #include "comp.h"
 #include "input.h"
@@ -33,6 +34,12 @@
 #endif
 
 static const char *TAG = "os";
+
+// How long the splash holds the last ninth of the bar when there is nothing on the USB bus at all.
+// boot.c extends it by a few seconds when something *is* mounted (a hub, or a receiver whose
+// keyboard and mouse have not appeared yet) and ends it as soon as a pointer answers, so this number
+// is only paid by a machine with nothing attached: raise it if a cold receiver enumerates later.
+#define BOOT_INPUT_WAIT_MS 4000
 
 void usb_input_start(void);
 #if BOARD_HAS_TOUCH
@@ -57,10 +64,21 @@ static void dump_windows(void *arg)
 
 static void launch_cmd(void *arg) { app_launch_name(arg, NULL); }
 
+static void boot_time_report(void *arg)
+{
+    (void)arg;
+    extern int usb_keyboards(void), usb_mice(void), usb_devices_mounted(void);
+    int up = boot_elapsed_ms();
+    serial_printf("boot: splash gone at %d ms, desktop answering at %u ms (usb: %d keyboard(s), "
+                  "%d mouse(es), %d device(s) on the bus)\n", up, (unsigned)boot_ready_ms(),
+                  usb_keyboards(), usb_mice(), usb_devices_mounted());
+}
+
 bool os_serial_command(const char *cmd, char *arg)
 {
     if (!strcmp(cmd, "perf")) { ev_call_sync(run_perf, arg); ev_call_sync(NULL, NULL); return true; }
     if (!strcmp(cmd, "wins")) { ev_call_sync(dump_windows, NULL); return true; }
+    if (!strcmp(cmd, "boottime")) { boot_time_report(NULL); return true; }
     if (!strcmp(cmd, "cat")) {
         int n = 0;
         char *t = fs_read_all(arg, &n);
@@ -155,20 +173,38 @@ static void gui_task(void *unused)
     // On the VGA board the scan-out interrupt runs on the core that starts the panel, which is this
     // one: the window manager and the scan-out then share core 1 (docs/PERF.md).
     ESP_ERROR_CHECK(disp_init());
+    // From here until boot_done() the splash owns the logical framebuffer: the desktop appears only
+    // when everything that answers the mouse is up, and the bar says what is still being started.
+    boot_init();
+    boot_stage(BOOT_STAGE_DRIVE);
     storage_init();
+    boot_sub(BOOT_STAGE_DRIVE, 7, 7, "card slot watching");
+    // Sound comes next rather than last: the mixer task spends a while synthesising the system sounds,
+    // and starting it here puts that work alongside the drive, the programs and the wait for the pointer
+    // instead of after everything - so the startup chime is ready when the desktop appears, not a beat later.
+    boot_stage(BOOT_STAGE_SOUND);
+    audio_start();
+    boot_stage(BOOT_STAGE_SETTINGS);
     settings_load();
+    boot_stage(BOOT_STAGE_CLOCK);
     clock_init();
+    boot_stage(BOOT_STAGE_DESKTOP);
     wm_init();
+    boot_stage(BOOT_STAGE_APPS);
     app_loader_start();
 #if BOARD_HAS_TOUCH
+    boot_stage(BOOT_STAGE_TOUCH);
     touch_start();
 #endif
-    audio_start();
+    boot_stage(BOOT_STAGE_NET);
     net_boot();
+    boot_wait_input(BOOT_INPUT_WAIT_MS);   // hold the bar until the pointer answers, see boot.c
+    input_pointer_frozen(false);  // the pointer is live from the first desktop frame, centred
     disp_cursor_show(true);
-    wm_pump(0);
+    wm_pump(0);           // the desktop is painted here and takes the screen from the splash
     ESP_LOGI(TAG, "desktop up at %u ms", (unsigned)os_uptime_ms());
     audio_chime(CHIME_STARTUP);
+    boot_done();
     wm_run();
 }
 
@@ -184,6 +220,7 @@ void app_main(void)
     esp_event_handler_register(ESP_HOSTED_EVENT, ESP_HOSTED_EVENT_TRANSPORT_UP, hosted_up, NULL);
 #endif
     input_init();
+    input_pointer_frozen(true);   // pointer input starts with the desktop, not with the splash
     serial_start();
     xTaskCreatePinnedToCore(gui_task, "gui", 8192, NULL, 5, NULL, GUI_CORE);
     usb_input_start();

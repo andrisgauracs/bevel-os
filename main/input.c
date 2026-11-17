@@ -203,8 +203,18 @@ static void pointer_wanted(bool on)
     disp_cursor_show(on);
 }
 
+// While the boot splash owns the screen the pointer is not drawn and there is nothing under it to
+// click, so pointer input is dropped rather than queued: when the desktop appears, the cursor starts
+// where the window manager put it - the middle of the screen - instead of wherever the last few
+// seconds of waiting had dragged it. The reports still count as "a pointer is attached", which is
+// exactly what the boot wait is watching for, so the splash is not held up by this.
+static volatile bool s_ptr_frozen;
+
+void input_pointer_frozen(bool frozen) { s_ptr_frozen = frozen; }
+
 static void mouse_to(int x, int y)
 {
+    if (s_ptr_frozen) { s_mouse_seen = true; return; }
     if (x < 0) x = 0;
     if (y < 0) y = 0;
     if (x > SCREEN_W - 1) x = SCREEN_W - 1;
@@ -254,6 +264,7 @@ void input_mouse_buttons(uint8_t mask)
     uint8_t changed = mask ^ s_buttons;
     if (!changed) return;
     s_mouse_seen = true;
+    if (s_ptr_frozen) return;   // a click at the splash lands on nothing, so it is not recorded
     for (int b = 1; b <= 4; b <<= 1) {
         if (!(changed & b)) continue;
         if (mask & b) s_buttons |= b; else s_buttons &= ~b;
@@ -265,7 +276,7 @@ void input_mouse_buttons(uint8_t mask)
 
 void input_wheel(int delta)
 {
-    if (!delta) return;
+    if (!delta || s_ptr_frozen) return;
     event_t e = {.type = EV_WHEEL, .x = delta, .mods = s_mods};
     ev_post(&e);
 }

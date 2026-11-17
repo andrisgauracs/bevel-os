@@ -30,7 +30,7 @@ if(NOT IDF_TARGET STREQUAL "esp32s3")
     list(APPEND EMBEDDED "../disk/Music/Chime.wav")
 endif()
 
-idf_component_register(SRCS "main.c" "board.c" "audio.c" "clock.c" ${BOARD_SRCS}
+idf_component_register(SRCS "main.c" "boot.c" "board.c" "audio.c" "clock.c" ${BOARD_SRCS}
                             "gfx.c" "comp.c" "input.c" "serial.c" "perf.c"
                             "wm.c" "ui.c" "menu.c" "shell.c" "dlg.c" "apps.c" "apps_basic.c"
                             "storage.c" "app_loader.c" "app_files.c" "app_editor.c" "app_misc.c" "net.c" "app_net.c" "app_browser.c"

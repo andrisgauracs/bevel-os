@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "board.h"
+#include "boot.h"
 #include "comp.h"
 #include "input.h"
 #include "os.h"
@@ -47,6 +48,7 @@ bool storage_init(void)
     };
     esp_err_t err = esp_vfs_fat_spiflash_mount_rw_wl(DISK_ROOT, "storage", &cfg, &s_wl);
     s_mounted = err == ESP_OK;
+    boot_sub(BOOT_STAGE_DRIVE, 1, 7, s_mounted ? "mounted" : "mount failed");
     if (!s_mounted) ESP_LOGE("disk", "mount failed: %s", esp_err_to_name(err));
     else {
         // A blank drive (first boot, or reformatted after a power cut damaged it) gets its
@@ -57,12 +59,14 @@ bool storage_init(void)
         // Each firmware build stamps the drive; a different stamp means the bundled programs
         // on the drive may be older than the ones in this firmware.
         char stamp[65] = "", have[65] = "";
+        boot_sub(BOOT_STAGE_DRIVE, 2, 7, "checking the drive's stamp");
         esp_app_get_elf_sha256(stamp, sizeof(stamp));
         FILE *sf = fopen(DISK_ROOT "/System/firmware.id", "rb");
         if (sf) { size_t k = fread(have, 1, 64, sf); have[k] = 0; fclose(sf); }
         s_new_firmware = strcmp(stamp, have) != 0;
         // "blank" = the sample files of this firmware were never installed on this drive
         bool blank = stat(DISK_ROOT "/System/samples-2", &st) != 0;
+        boot_sub(BOOT_STAGE_DRIVE, 3, 7, "folders");
         mkdir(DISK_ROOT "/Documents", 0777);
         if (blank) {
             restore_file(DISK_ROOT "/Documents/Welcome.txt", welcome_start, welcome_end - welcome_start, false);
@@ -75,10 +79,16 @@ bool storage_init(void)
         mkdir(SD_ROOT, 0777);    // the folder the card is mounted on
 #endif
         // The bundled programs are kept in the firmware too and put back if missing or outdated.
+        // One block of the boot bar per program: after a firmware update these are rewritten, which
+        // is the part of the boot the user notices (Doom.elf alone is most of a megabyte).
         #define BUNDLED(sym, file) do { \
             extern const char sym##_start[] asm("_binary_" #sym "_elf_start"); \
             extern const char sym##_end[] asm("_binary_" #sym "_elf_end"); \
+            char what[32]; \
+            snprintf(what, sizeof(what), "restoring %s", #file); \
+            boot_sub(BOOT_STAGE_DRIVE, k + 1, 7, what); k++; \
             restore_file(DISK_ROOT "/Apps/" file, sym##_start, sym##_end - sym##_start, true); } while (0)
+        int k = 3;      // "folders" was block 3, so the programs are blocks 4..7 of the drive stage
         BUNDLED(Snake, "Snake.elf");
         BUNDLED(Hello, "Hello.elf");
         BUNDLED(CrashTest, "CrashTest.elf");
@@ -91,6 +101,7 @@ bool storage_init(void)
         }
         if (blank) {
             restore_file(DISK_ROOT "/Pictures/Bevel.bmp", pic_start, pic_end - pic_start, false);
+            boot_sub(BOOT_STAGE_DRIVE, 7, 7, "sample files");
 #if BOARD_HAS_AUDIO
             extern const char wav_start[] asm("_binary_Chime_wav_start");
             extern const char wav_end[] asm("_binary_Chime_wav_end");

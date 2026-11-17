@@ -34,6 +34,7 @@
 #include "audio.h"
 #include "wm.h"
 #include "apps.h"
+#include "boot.h"
 #include "os.h"
 #include "fsutil.h"
 #include "comp.h"
@@ -794,7 +795,12 @@ void app_launch_sd(int i)
 
 void app_loader_start(void)
 {
+    boot_sub(BOOT_STAGE_APPS, 0, 2, "reading /disk/Apps");
     app_loader_init();
     app_sd_rescan();
+    char detail[32];
+    snprintf(detail, sizeof(detail), "%d on the card", s_sd_n);
+    boot_sub(BOOT_STAGE_APPS, 1, 2, detail);
     timer_add(1000, true, hung_check, NULL);
+    boot_sub(BOOT_STAGE_APPS, 2, 2, "watching for hangs");
 }

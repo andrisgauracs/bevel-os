@@ -67,6 +67,15 @@ static int s_kbd_count, s_mouse_count;
 int usb_keyboards(void) { return s_kbd_count; }
 int usb_mice(void) { return s_mouse_count; }
 
+// How many devices the USB host has mounted. A hub counts as one and its keyboard and mouse are not
+// visible yet, so this tells an empty port apart from a hub that is still working through what is
+// plugged into it. The boot splash uses that to decide whether to keep waiting.
+int usb_devices_mounted(void)
+{
+    usb_host_lib_info_t info = {0};
+    return usb_host_lib_info(&info) == ESP_OK ? (int)info.num_devices : 0;
+}
+
 // ---------------------------------------------------------------- report descriptor parser
 
 static void add_field(iface_t *it, field_t f)
@@ -345,6 +354,7 @@ static void hid_task(void *arg)
 // seconds, switch the root port off and on, which restarts connection detection.
 volatile int usb_force_cycle;
 volatile int usb_wd_off;
+volatile int usb_boot_wait;   // set while the boot splash is still waiting for a pointer (boot.c)
 
 static void port_watchdog_task(void *arg)
 {
@@ -359,6 +369,11 @@ static void port_watchdog_task(void *arg)
         // assertion in ESP-IDF's hub driver.
         usb_host_lib_info_t info = {0};
         if (usb_host_lib_info(&info) == ESP_OK && info.num_devices > 0) { idle_s = 0; usb_force_cycle = 0; continue; }
+        // While the boot splash is still holding the screen for a pointer, do not back off. A cold
+        // wireless receiver raises its connection event whenever it feels like, and if it missed the
+        // host's first look at the port the next chance is whatever this wait is: 4 s during boot,
+        // 8 and 12 s once the machine is running. Backing off is for a machine that is already up.
+        if (usb_boot_wait && period > 4) period = 4;
         if (++idle_s < period && !usb_force_cycle) continue;
         idle_s = 0;
         usb_force_cycle = 0;
