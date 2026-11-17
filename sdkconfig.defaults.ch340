@@ -1,0 +1,4 @@
+# For an ESP32-S3 devkit whose USB-UART bridge is a CH340 (USB ID 1a86:7523): the esp32s3-ch340
+# preset reads this after sdkconfig.defaults and sdkconfig.defaults.esp32s3. A CH340 lost about one
+# byte in 3500 at the default 2 Mbaud, however the data was paced; at 460800 none were lost.
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=460800

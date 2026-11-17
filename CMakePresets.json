@@ -24,7 +24,7 @@
             },
             {
               "type": "monitorBaudRate",
-              "value": "460800"
+              "value": "2000000"
             },
             {
               "type": "openOCD",
@@ -38,6 +38,40 @@
           ]
         }
       }
+    },
+    {
+      "name": "esp32s3-ch340",
+      "binaryDir": "build-esp32s3-ch340",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG_DEFAULTS": "${sourceDir}/sdkconfig.defaults;${sourceDir}/sdkconfig.defaults.ch340",
+        "SDKCONFIG": "${sourceDir}/build-esp32s3-ch340/sdkconfig"
+      },
+      "vendor": {
+        "espressif/vscode-esp-idf": {
+          "schemaVersion": 1,
+          "settings": [
+            {
+              "type": "flashBaudRate",
+              "value": "921600"
+            },
+            {
+              "type": "monitorBaudRate",
+              "value": "460800"
+            },
+            {
+              "type": "openOCD",
+              "value": {
+                "debugLevel": 2,
+                "configs": [
+                  "board/esp32s3-builtin.cfg"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "displayName": "esp32s3 (CH340 bridge, console at 460800)"
     },
     {
       "name": "esp32p4",

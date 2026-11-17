@@ -24,8 +24,10 @@
   Tools: tools/fbdump.py, tools/serbridge.py, tools/cycle_modes.py, tools/serlog.py.
 - OS session (2026-11-12): the OS is "Bevel OS". No SD card (user decision): files live on a FAT
   partition in flash (`storage`, 12 MB, mounted at /disk; see partitions_esp32s3.csv).
-- Console and command channel run at 460800 baud (CONFIG_ESP_CONSOLE_UART_CUSTOM); they ran at 2 Mbaud
-  until the CH340 on a later devkit turned out to lose about one byte in 3500 at that rate. The old single-letter
+- Console and command channel run at 2 Mbaud (CONFIG_ESP_CONSOLE_UART_CUSTOM). A devkit with a CH340
+  bridge instead of a CP210x loses about one byte in 3500 at that rate: build that one with the
+  `esp32s3-ch340` preset (460800, `sdkconfig.defaults.ch340`); `tools/bv.py` picks the rate by the
+  bridge's USB ID. The old single-letter
   commands are gone except `D`; use `tools/bv.py` (daemon holds the port) and `tools/bvx.sh`.
 - Video timing is still 26.67 MHz / H total 848, but the porches are now 36 front / 70 back so the
   picture is centred in a capture that expects standard timing. An absolute pointer (JetKVM) is

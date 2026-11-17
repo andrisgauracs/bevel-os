@@ -1,6 +1,6 @@
 // Serial command channel on whichever port the board is wired to: the P4 board's USB-Serial-JTAG
 // port ("USB1", also the log console and the flashing port), the S3 board's UART0 COM port at
-// 460800 baud. Screen dumps, input injection, stats and self-tests, so the OS can be driven and checked
+// 2 Mbaud (460800 when built with the esp32s3-ch340 preset). Screen dumps, input injection, stats and self-tests, so the OS can be driven and checked
 // without anyone at the keyboard.
 // Commands are text lines; every command ends its output with a line "@@OK" (or "@@ERR ...").
 #include <stdio.h>

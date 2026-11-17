@@ -32,9 +32,22 @@ def find_port():
     return next(iter(sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*"))), "COM13" if os.name == "nt" else "/dev/ttyACM0")
 
 
-# The S3 console is UART0 at 460800 baud behind a USB-UART bridge (its CH340 lost bytes at 2 Mbaud);
-# the P4 console is USB-Serial-JTAG, which ignores the rate. BV_BAUD overrides.
-BAUD = int(os.environ.get("BV_BAUD", "460800"))
+def console_baud():
+    """The S3 console is UART0 behind a USB-UART bridge: 2 Mbaud as built by the esp32s3 preset (a
+    CP210x devkit), 460800 as built by esp32s3-ch340 for a devkit with a CH340 (USB ID 1a86), which
+    loses bytes at 2 Mbaud. So the bridge decides; the P4's USB-Serial-JTAG port ignores the rate.
+    BV_BAUD overrides."""
+    if os.environ.get("BV_BAUD"): return int(os.environ["BV_BAUD"])
+    try:
+        from serial.tools import list_ports
+        for p in list_ports.comports():
+            if p.device == find_port() and p.vid == 0x1A86: return 460800
+    except Exception:
+        pass
+    return 2000000
+
+
+BAUD = console_baud()
 ADDR = ("127.0.0.1", 47811)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG = os.path.join(ROOT, "build", "serial.log")

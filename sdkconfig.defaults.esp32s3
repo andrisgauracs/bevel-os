@@ -21,10 +21,11 @@ CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
 CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
 
-# Console, logs and the serial command channel on UART0 (the board's COM port), at 460800 baud: the
-# devkit's CH340 bridge lost about one byte in 3500 at 2 Mbaud, however the data was paced
+# Console, logs and the serial command channel on UART0 (the board's COM port), at 2 Mbaud: what a
+# devkit with a CP210x bridge carries. A devkit with a CH340 loses bytes at that rate; build it with
+# the esp32s3-ch340 preset, which adds sdkconfig.defaults.ch340 (460800).
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y
-CONFIG_ESP_CONSOLE_UART_BAUDRATE=460800
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000
 
 # Storage: 12 MB FAT drive in the internal flash (no card reader on this board)
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_esp32s3.csv"

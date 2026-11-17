@@ -1,5 +1,5 @@
 # Build, flash over the board's console port and restart the serial daemon (Windows).
-# Usage: tools\flash.ps1 [-Port COM13] [-Target esp32p4|esp32s3] [-NoFlash]
+# Usage: tools\flash.ps1 [-Port COM13] [-Target esp32p4|esp32s3|esp32s3-ch340] [-NoFlash]
 # Run it in a shell where ESP-IDF is active (idf.py on the PATH). -Target picks the CMake preset
 # (CMakePresets.json), so each board builds in its own build-<target> directory with its own
 # sdkconfig there; without it the P4 board is built. COM13 is the P4 board's USB-Serial-JTAG port;
