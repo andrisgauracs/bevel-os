@@ -205,15 +205,17 @@ uint8_t *disp_fb(void) { return s_fb; }
 
 // What the panel shows, copied out for a screen dump. The pointer is part of the panel framebuffer
 // (it is drawn during the conversion), so leaving it out means having it repainted first.
-void disp_snapshot(uint16_t *dst, bool hide_cursor)
+void disp_snapshot_rows(uint16_t *dst, int y0, int rows, bool hide_cursor)
 {
-    if (!s_pfb || !dst) return;
+    if (!s_pfb || !dst || y0 < 0 || rows <= 0 || y0 + rows > SCREEN_H) return;
     bool shown;
     disp_cursor_get(NULL, NULL, &shown);
     if (hide_cursor && shown) disp_cursor_show(false);
-    memcpy(dst, s_pfb, (size_t)SCREEN_W * SCREEN_H * sizeof(uint16_t));
+    memcpy(dst, s_pfb + (size_t)y0 * SCREEN_W, (size_t)SCREEN_W * rows * sizeof(uint16_t));
     if (hide_cursor && shown) disp_cursor_show(true);
 }
+
+void disp_snapshot(uint16_t *dst, bool hide_cursor) { disp_snapshot_rows(dst, 0, SCREEN_H, hide_cursor); }
 
 // ---------------------------------------------------------------- pointer
 

@@ -39,20 +39,22 @@ void disp_present(int x, int y, int w, int h)
     (void)x; (void)y; (void)w; (void)h;   // the scan-out reads the framebuffer itself: nothing to do
 }
 
-void disp_snapshot(uint16_t *dst, bool hide_cursor)
+void disp_snapshot(uint16_t *dst, bool hide_cursor) { disp_snapshot_rows(dst, 0, SCREEN_H, hide_cursor); }
+
+void disp_snapshot_rows(uint16_t *dst, int y0, int rows, bool hide_cursor)
 {
     static DRAM_ATTR uint8_t s_row[SCREEN_W];
     uint8_t *fb = vga_fb();
-    if (!dst || !fb) return;
+    if (!dst || !fb || y0 < 0 || rows <= 0 || y0 + rows > SCREEN_H) return;
     // The pointer lives in the scan-out, not in the framebuffer, so taking it out of the picture also
     // hides it on screen for a moment - the same thing the other board's dump does.
     bool shown;
     vga_cursor_get(NULL, NULL, &shown);
     if (hide_cursor && shown) vga_cursor_show(false);
-    for (int y = 0; y < SCREEN_H; y++) {
+    for (int y = y0; y < y0 + rows; y++) {
         memcpy(s_row, fb + (size_t)y * SCREEN_W, SCREEN_W);
         vga_cursor_overlay_row(s_row, y);
-        uint16_t *d = dst + (size_t)y * SCREEN_W;
+        uint16_t *d = dst + (size_t)(y - y0) * SCREEN_W;
         for (int x = 0; x < SCREEN_W; x++) d[x] = s_rgb222_to_565[s_row[x]];
     }
     if (hide_cursor && shown) vga_cursor_show(true);

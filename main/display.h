@@ -63,6 +63,7 @@ void disp_present(int x, int y, int w, int h);
 // What the screen shows, converted to RGB565 into dst (SCREEN_W x SCREEN_H pixels), pointer and
 // overlays included. hide_cursor leaves the pointer out. dst is a PSRAM buffer; call from a worker task.
 void disp_snapshot(uint16_t *dst, bool hide_cursor);
+void disp_snapshot_rows(uint16_t *dst, int y0, int rows, bool hide_cursor);   // rows y0.. only, into dst
 
 // Mouse pointer: drawn over the picture instead of into the framebuffer, so moving it costs nothing
 // in repaints. px = w*h bytes, 0xFF = transparent. Max 16x20.

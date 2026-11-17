@@ -191,7 +191,7 @@ C and a little assembly). The full description is in [docs/OS-REPORT.md](docs/OS
   only when the Network panel or browser is opened or a network is saved. The browser does HTTP and
   HTTPS GET, follows redirects, and lays out HTML as text: headings, lists, links, preformatted
   text and simple search forms, pages up to 2 MB. No images, scripts or style sheets.
-- **Serial channel** (`main/serial.c`, `tools/bv.py`): a 2 Mbaud command line on the COM port
+- **Serial channel** (`main/serial.c`, `tools/bv.py`): a command line on the COM port (USB on the P4, 460800 baud on the S3)
   for framebuffer dumps (a PNG in 0.4 s), key and mouse injection, benchmarks and file upload.
   This is how the agent saw and tested the screen.
 
@@ -228,7 +228,7 @@ rebuilds nothing of the other one. ESP-IDF 6.1's `idf.py` reads the presets file
 ESP-IDF extension's "Select Project Configuration" offers the same two.
 
 On Windows, `tools\flash.ps1 -Target esp32p4 -Port COM13` does build, flash and the serial daemon in
-one go (the P4 is its default). The S3 board's console is UART0 at 2 Mbaud; the P4 board talks over
+one go (the P4 is its default). The S3 board's console is UART0 at 460800 baud; the P4 board talks over
 its USB-Serial-JTAG port.
 
 `sdkconfig.defaults` holds what both boards share, and `sdkconfig.defaults.esp32s3` /

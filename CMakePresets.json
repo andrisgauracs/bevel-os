@@ -24,7 +24,7 @@
             },
             {
               "type": "monitorBaudRate",
-              "value": "2000000"
+              "value": "460800"
             },
             {
               "type": "openOCD",

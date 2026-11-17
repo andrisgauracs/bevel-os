@@ -32,11 +32,22 @@ def find_port():
     return next(iter(sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*"))), "COM13" if os.name == "nt" else "/dev/ttyACM0")
 
 
-BAUD = 115200   # ignored by the USB-Serial-JTAG port
+# The S3 console is UART0 at 460800 baud behind a USB-UART bridge (its CH340 lost bytes at 2 Mbaud);
+# the P4 console is USB-Serial-JTAG, which ignores the rate. BV_BAUD overrides.
+BAUD = int(os.environ.get("BV_BAUD", "460800"))
 ADDR = ("127.0.0.1", 47811)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG = os.path.join(ROOT, "build", "serial.log")
 ENDS = (b"@@OK", b"@@ERR", b"@@END")
+
+
+def big_rx(s):
+    """Windows gives a serial port a 4 KB receive buffer, which a short pause on this side can
+    overflow during a dump. Ask for 1 MB (other systems ignore this)."""
+    try:
+        s.set_buffer_size(rx_size=1 << 20, tx_size=1 << 16)
+    except (AttributeError, Exception):
+        pass
 
 
 def open_port():
@@ -46,6 +57,7 @@ def open_port():
     s.port = find_port(); s.baudrate = BAUD; s.timeout = 0.02; s.write_timeout = 5
     s.dtr = False; s.rts = False
     s.open()
+    big_rx(s)
     return s
 
 
@@ -87,6 +99,13 @@ def direct(lines, secs=8.0):
 
 def direct_dump(path, extra="", crop=None, scale=1, secs=60.0):
     """The framebuffer as PNG, also without the daemon (the payload is longer than a command reply)."""
+    if use_bands():
+        s = open_port()
+        try:
+            drain(s)
+            return banded(lambda line: direct_reply(s, line), path, extra, crop, scale)
+        finally:
+            s.close()
     s = open_port()
     out, need = b"", None
     try:
@@ -147,6 +166,7 @@ def daemon():
     s.port = find_port(); s.baudrate = BAUD; s.timeout = 0.02; s.write_timeout = 5
     s.dtr = False; s.rts = False
     s.open()
+    big_rx(s)
     lock = threading.Lock()
     listeners = []
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
@@ -234,8 +254,74 @@ def write_png(path, w, h, rgb, scale=1):
                 chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
+BAND = 32   # rows per piece of a banded dump
+
+
+def use_bands():
+    """A USB-UART bridge (the S3's CH340) can lose the odd byte, so over anything but the P4's
+    USB-Serial-JTAG port dumps come in bands of rows, each checked and asked for again if it is short
+    or its sum is wrong. BV_BANDS=0/1 overrides."""
+    if os.environ.get("BV_BANDS") is not None: return os.environ["BV_BANDS"] == "1"
+    try:
+        from serial.tools import list_ports
+        for p in list_ports.comports():
+            if p.device == find_port(): return not (p.vid == 0x303A and p.pid == 0x1001)
+    except Exception:
+        pass
+    return True
+
+
+def parse_band(out):
+    """(w, h, y0, rows, payload) of one band reply, or None if it did not arrive whole."""
+    i = out.find(b"@@FBB ")
+    if i < 0 or b"\n" not in out[i:]: return None
+    j = out.index(b"\n", i)
+    try:
+        w, h, y0, rows, n, total = map(int, out[i + 6:j].split())
+    except ValueError:
+        return None
+    data = out[j + 1:j + 1 + n]
+    if len(data) != n or sum(data) & 0xFFFFFFFF != total: return None
+    if sum(data[k] for k in range(0, n, 3)) != w * rows: return None
+    return w, h, y0, rows, data
+
+
+def banded(fetch, path, extra="", crop=None, scale=1):
+    """The screen band by band; fetch(line) returns one reply. The link loses an odd byte now and
+    then, so a band that does not add up is asked for again at half the height (down to one row), and
+    the height grows back after each band that arrives whole: a quiet desktop goes in large bands, a
+    noisy picture (Doom) in small ones."""
+    y, h, w, parts, size, fails = 0, None, 0, [], BAND, 0
+    while h is None or y < h:
+        got = parse_band(fetch(("dump %s band %d %d" % (extra, y, size)).replace("  ", " ")))
+        if not got:
+            fails += 1
+            if fails > 40: sys.exit("rows %d.. never arrived whole" % y)
+            size = max(1, size // 2)
+            continue
+        w, h, y0, rows, data = got
+        parts.append(data)
+        y += rows
+        size = min(BAND, size * 2)
+    payload = b"".join(parts)
+    decode_dump(b"@@FB16 %d %d %d\n" % (w, h, len(payload)) + payload, path, crop, scale)
+
+
 def dump(path, extra="", crop=None, scale=1):
+    if use_bands(): return banded(lambda line: request(line, 20), path, extra, crop, scale)
     decode_dump(request(("dump " + extra).strip(), 60), path, crop, scale)
+
+
+def direct_reply(s, line, secs=20.0):
+    """One command over an open port: the bytes up to and including @@END / @@OK / @@ERR."""
+    drain(s, 0.05)
+    s.write(line.encode() + b"\n")
+    out, deadline = b"", time.time() + secs
+    while time.time() < deadline:
+        out += s.read(65536)
+        if any(e + b"\n" in out for e in ENDS): break
+    log_write(out)
+    return out
 
 
 def decode_dump(out, path, crop=None, scale=1, pad=False):

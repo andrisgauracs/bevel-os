@@ -1,6 +1,6 @@
 // Serial command channel on whichever port the board is wired to: the P4 board's USB-Serial-JTAG
 // port ("USB1", also the log console and the flashing port), the S3 board's UART0 COM port at
-// 2 Mbaud. Screen dumps, input injection, stats and self-tests, so the OS can be driven and checked
+// 460800 baud. Screen dumps, input injection, stats and self-tests, so the OS can be driven and checked
 // without anyone at the keyboard.
 // Commands are text lines; every command ends its output with a line "@@OK" (or "@@ERR ...").
 #include <stdio.h>
@@ -27,6 +27,7 @@
 #include "apps.h"
 #include "os.h"
 #include "mbedtls/base64.h"
+#include "esp_rom_crc.h"
 
 static FILE *s_put;   // file being uploaded (putopen / putdata / putclose)
 
@@ -67,28 +68,48 @@ void serial_printf(const char *fmt, ...)
 
 // The screen as it looks (RGB565, pointer and overlays included), run-length encoded:
 // header "@@FB16 w h bytes", then (count, low byte, high byte) triplets.
+// "dump band y0 rows" sends only those rows, with header "@@FBB w h y0 rows bytes sum" (sum = the
+// payload's bytes added up): over a link that loses the odd byte - the S3's CH340 lost about one in
+// 3500 at 2 Mbaud, whatever the pacing - the screen can be read band by band, and a band that does
+// not add up asked for again.
+typedef struct { bool nocursor; int y0, rows; } dump_req_t;
+
 static void dump_fb(void *arg)
 {
-    const int len = SCREEN_W * SCREEN_H;
-    uint16_t *copy = heap_caps_malloc(len * 2, MALLOC_CAP_SPIRAM);
+    const dump_req_t *rq = arg;
+    bool band = rq->rows > 0;
+    int y0 = band ? rq->y0 : 0, rows = band ? rq->rows : SCREEN_H;
+    if (y0 < 0) y0 = 0;
+    if (y0 > SCREEN_H) y0 = SCREEN_H;
+    if (y0 + rows > SCREEN_H) rows = SCREEN_H - y0;
+    // only the rows asked for: a band needs 40 KB where the whole screen needs 600 KB to 1.2 MB, which
+    // a program like Doom may have left nobody
+    size_t bytes = (size_t)SCREEN_W * (rows > 0 ? rows : 1) * 2;
+    uint16_t *copy = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+    if (!copy) copy = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL);
     if (!copy) { out("@@ERR no memory\n"); return; }
-    disp_snapshot(copy, arg != NULL);
+    if (rows > 0) disp_snapshot_rows(copy, y0, rows, rq->nocursor);
+    const uint16_t *px = copy;
+    const int len = SCREEN_W * rows;
     size_t total = 0;
+    uint32_t sum = 0;
     for (int i = 0; i < len;) {
         int run = 1;
-        while (i + run < len && run < 255 && copy[i + run] == copy[i]) run++;
+        while (i + run < len && run < 255 && px[i + run] == px[i]) run++;
         total += 3;
+        sum += run + (px[i] & 0xFF) + (px[i] >> 8);
         i += run;
     }
-    serial_printf("\n@@FB16 %d %d %u\n", SCREEN_W, SCREEN_H, (unsigned)total);
+    if (band) serial_printf("\n@@FBB %d %d %d %d %u %u\n", SCREEN_W, SCREEN_H, y0, rows, (unsigned)total, (unsigned)sum);
+    else serial_printf("\n@@FB16 %d %d %u\n", SCREEN_W, SCREEN_H, (unsigned)total);
     static uint8_t buf[1020];
     int n = 0;
     for (int i = 0; i < len;) {
         int run = 1;
-        while (i + run < len && run < 255 && copy[i + run] == copy[i]) run++;
+        while (i + run < len && run < 255 && px[i + run] == px[i]) run++;
         buf[n++] = (uint8_t)run;
-        buf[n++] = (uint8_t)copy[i];
-        buf[n++] = (uint8_t)(copy[i] >> 8);
+        buf[n++] = (uint8_t)px[i];
+        buf[n++] = (uint8_t)(px[i] >> 8);
         i += run;
         if (n == sizeof(buf)) { out_bytes(buf, n); n = 0; }
     }
@@ -211,7 +232,11 @@ static void handle_line(char *line)
 
     if (!strcmp(line, "D") || !strcmp(line, "dump")) {
         settle();
-        ev_call_sync(dump_fb, (void *)(intptr_t)(!strcmp(arg, "nocursor")));
+        // dump [nocursor] [band y0 rows]
+        dump_req_t rq = {.nocursor = strstr(arg, "nocursor") != NULL};
+        const char *b = strstr(arg, "band");
+        if (b && sscanf(b + 4, "%d %d", &rq.y0, &rq.rows) != 2) rq.rows = 0;
+        ev_call_sync(dump_fb, &rq);
         return; // dump ends with @@END
     } else if (!strcmp(line, "stat")) {
         cmd_stat();
@@ -284,6 +309,18 @@ static void handle_line(char *line)
             serial_printf("key %u mod %u: %d bytes", u, mods, (int)strlen(out));
             for (int i = 0; out[i]; i++) serial_printf(" %02X", (unsigned char)out[i]);
             serial_printf("\n");
+        }
+    } else if (!strcmp(line, "crc")) {
+        // crc <path>: CRC-32 and size of a file, to check a copy made with put (same as zlib.crc32)
+        FILE *f = fopen(arg, "rb");
+        if (!f) ok = false;
+        else {
+            static uint8_t cbuf[4096];
+            uint32_t crc = 0;
+            size_t total = 0, k;
+            while ((k = fread(cbuf, 1, sizeof(cbuf), f)) > 0) { crc = esp_rom_crc32_le(crc, cbuf, k); total += k; }
+            fclose(f);
+            serial_printf("crc %08x size %u\n", (unsigned)crc, (unsigned)total);
         }
     } else if (!strcmp(line, "ping")) {
         out("pong\n");
