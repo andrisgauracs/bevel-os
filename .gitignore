@@ -23,3 +23,6 @@ __pycache__/
 # Editor setup the ESP-IDF extension writes per machine (toolchain paths, COM port, clangd)
 .vscode/settings.json
 .clangd
+
+# Wi-Fi credentials copied between boards by hand: never committed
+disk/System/wifi.ini
