@@ -440,7 +440,7 @@ void app_viewer(const char *arg)
     char path[300] = "";
     if (arg && arg[0]) strlcpy(path, arg, sizeof(path));
     else {
-        strcpy(path, DISK_ROOT "/Pictures/x");
+        strcpy(path, DISK_ROOT "/Pictures");
         if (!file_dialog(NULL, false, "Open Picture", path, sizeof(path))) return;
     }
     const char *err;

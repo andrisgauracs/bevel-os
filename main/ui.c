@@ -48,7 +48,8 @@ void ui_draw_button(gfx_t *g, int x, int y, int w, int h, const char *label, con
     int iw = icon ? icon->w + (tw ? 4 : 0) : 0;
     int cx = x + (w - tw - iw) / 2 + o;
     if (cx < x + 3) cx = x + 3;
-    if (icon) gfx_bitmap(g, cx, y + (h - icon->h) / 2 + o, icon);
+    if (icon && disabled) gfx_bitmap_tint(g, cx, y + (h - icon->h) / 2, icon, C_FACE);   // washed out
+    else if (icon) gfx_bitmap(g, cx, y + (h - icon->h) / 2 + o, icon);
     if (label) {
         int ty = y + (h - FONT_UI_H) / 2 + o;
         if (disabled) {
@@ -224,7 +225,7 @@ widget_t *ui_icon(window_t *win, int x, int y, const bitmap_t *bmp)
 
 // ---------------------------------------------------------------- button
 
-typedef struct { widget_t w; bool pressed, over; } button_t;
+typedef struct { widget_t w; bool pressed, over; const bitmap_t *icon; } button_t;
 
 static void button_paint(widget_t *w, gfx_t *g)
 {
@@ -234,7 +235,7 @@ static void button_paint(widget_t *w, gfx_t *g)
     window_t *win = w->win;
     bool other_btn = win->focus && win->focus != w && !strcmp(win->focus->cls->name, "button");
     bool def = wm_active() == win && (foc || (win->def_btn == w && !other_btn));
-    ui_draw_button(g, 0, 0, w->r.w, w->r.h, w->text, NULL, b->pressed && b->over, foc, def, w->flags & WF_DISABLED);
+    ui_draw_button(g, 0, 0, w->r.w, w->r.h, w->text && w->text[0] ? w->text : NULL, b->icon, b->pressed && b->over, foc, def, w->flags & WF_DISABLED);
 }
 
 static bool button_key(widget_t *w, const event_t *e)
@@ -273,6 +274,8 @@ widget_t *ui_button(window_t *win, int x, int y, int w, int h, const char *text,
     wd->on_action = on_click;
     return wd;
 }
+
+void ui_button_icon(widget_t *w, const bitmap_t *icon) { ((button_t *)w)->icon = icon; ui_invalidate(w); }
 
 // ---------------------------------------------------------------- check box / radio
 
@@ -987,6 +990,7 @@ void ui_listview_set_count(widget_t *w, int count)
 {
     listview_t *lv = (listview_t *)w;
     lv->count = count;
+    lv->typed[0] = 0;   // new contents: type-to-find starts afresh
     if (lv->sel >= count) lv->sel = count - 1;
     if (lv->sel < 0 && count > 0) lv->sel = 0;
     lv_ensure_visible(lv);

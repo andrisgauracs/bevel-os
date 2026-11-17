@@ -168,6 +168,7 @@ bool ui_caret_on(void);                 // caret blink phase
 
 widget_t *ui_label(window_t *win, int x, int y, int w, int h, const char *text);
 widget_t *ui_button(window_t *win, int x, int y, int w, int h, const char *text, void (*on_click)(widget_t *, int));
+void ui_button_icon(widget_t *b, const bitmap_t *icon);   // shown left of the text, or alone with text ""
 widget_t *ui_checkbox(window_t *win, int x, int y, int w, const char *text, bool checked);
 widget_t *ui_radio(window_t *win, int x, int y, int w, const char *text, int group, bool checked);
 bool ui_checked(const widget_t *w);
