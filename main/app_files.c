@@ -597,7 +597,7 @@ static const menu_item_t fm_edit[] = {
 };
 static const menu_item_t fm_go[] = {
     {"&Up one folder\tBackspace", FC_UP, NULL, &icon16_up, 0},
-    {"&Refresh\tF5", FC_REFRESH, NULL, NULL, 0},
+    {"&Refresh\tF5", FC_REFRESH, NULL, &icon16_refresh, 0},
     {NULL, 0, NULL, NULL, 0},
 };
 static const menu_item_t fm_bar[] = {{"&File", 0, fm_file, NULL, 0}, {"&Edit", 0, fm_edit, NULL, 0}, {"&Go", 0, fm_go, NULL, 0}, {NULL, 0, NULL, NULL, 0}};
