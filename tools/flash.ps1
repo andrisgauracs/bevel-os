@@ -1,16 +1,13 @@
 # Build, flash over the board's console port and restart the serial daemon (Windows).
 # Usage: tools\flash.ps1 [-Port COM13] [-Target esp32p4|esp32s3] [-NoFlash]
-# Run it in a shell where ESP-IDF is active (idf.py on the PATH). Without -Target the board that is
-# selected now is built; with it, the project switches to that board first (idf.py set-target), which
-# reconfigures the build directory. COM13 is the P4 board's USB-Serial-JTAG port; the S3 devkit
-# flashes over its own COM port, so pass -Port for that one.
-param([string]$Port = $env:BV_PORT, [string]$Target, [switch]$NoFlash)
+# Run it in a shell where ESP-IDF is active (idf.py on the PATH). -Target picks the CMake preset
+# (CMakePresets.json), so each board builds in its own build-<target> directory with its own
+# sdkconfig there; without it the P4 board is built. COM13 is the P4 board's USB-Serial-JTAG port;
+# the S3 devkit flashes over its own COM port, so pass -Port for that one.
+param([string]$Port = $env:BV_PORT, [string]$Target = "esp32p4", [switch]$NoFlash)
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
-if ($Target) {
-    idf.py set-target $Target 2>&1 | Select-String -Pattern "error|Set target" | ForEach-Object { $_.Line }
-    if ($LASTEXITCODE -ne 0) { Write-Output "SET-TARGET FAILED"; exit 1 }
-}
+$env:IDF_PRESET = $Target
 if (-not $Port) { $Port = "COM13" }
 
 $out = idf.py build 2>&1

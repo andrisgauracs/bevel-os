@@ -8,7 +8,7 @@ editor, a picture viewer, a terminal, Wi-Fi with a text web browser, and apps lo
 drive as separate ELF files, including Snake and Doom.
 
 The same tree also builds for a second board: a Guition JC1060P470-V2 (ESP32-P4) with a 7-inch
-MIPI-DSI panel, touch, wired Ethernet and a card reader. Pick it with `idf.py set-target esp32p4`;
+MIPI-DSI panel, touch, wired Ethernet and a card reader. Pick it with `idf.py --preset esp32p4`;
 [docs/PORT-JC1060P470-V2.md](docs/PORT-JC1060P470-V2.md) says what that port involved and what has
 not been tested on that board yet.
 
@@ -211,24 +211,26 @@ targets:
 git clone https://github.com/andrisgauracs/bevel-os
 cd bevel-os
 . $HOME/esp/esp-idf/export.sh          # or wherever ESP-IDF v6.1 is installed
-idf.py set-target esp32s3              # or: idf.py set-target esp32p4
-idf.py build                           # downloads elf_loader and usb_host_hid on the first run
-idf.py -p PORT flash                   # PORT = the board's COM port
+idf.py --preset esp32s3 build          # or --preset esp32p4; fetches elf_loader etc. the first time
+idf.py --preset esp32s3 -p PORT flash  # PORT = the board's COM port
 ```
 
-On Windows, `tools\flash.ps1 -Target esp32p4 -Port COM13` does build, flash and the serial daemon in
-one go. The S3 board's console is UART0 at 2 Mbaud; the P4 board talks over its USB-Serial-JTAG port.
+The two boards are the two configure presets in `CMakePresets.json`. Each builds in its own
+directory (`build-esp32s3/`, `build-esp32p4/`) with its own `sdkconfig` there, so switching boards
+rebuilds nothing of the other one. ESP-IDF 6.1's `idf.py` reads the presets file: without
+`--preset` (or `IDF_PRESET` in the environment) it takes the first one, the S3. In VS Code, the
+ESP-IDF extension's "Select Project Configuration" offers the same two.
 
-In VS Code, the ESP-IDF extension's "Select Project Configuration" offers `esp32s3` and `esp32p4`,
-the two configure presets in `CMakePresets.json`. Each builds in its own directory (`build-esp32s3/`,
-`build-esp32p4/`) with its own `sdkconfig` there, so switching does not touch the one in the tree.
+On Windows, `tools\flash.ps1 -Target esp32p4 -Port COM13` does build, flash and the serial daemon in
+one go (the P4 is its default). The S3 board's console is UART0 at 2 Mbaud; the P4 board talks over
+its USB-Serial-JTAG port.
 
 `sdkconfig.defaults` holds what both boards share, and `sdkconfig.defaults.esp32s3` /
 `sdkconfig.defaults.esp32p4` add what differs (PSRAM speed, the console, the partition table, Wi-Fi
-through the C6 on the P4). `idf.py set-target` rebuilds `sdkconfig` from those two files, so
-switching boards is a normal thing to do; the `sdkconfig` in the tree simply says which board was
-configured last. The `storage` partition is not flashed: the firmware formats it on first boot and
-fills it with the bundled files.
+through the C6 on the P4); a preset's `sdkconfig` is generated from those two files the first time
+it is configured. The `sdkconfig` at the top of the tree is the one `idf.py set-target` wrote before
+the presets, and the preset builds do not read it. The `storage` partition is not flashed: the
+firmware formats it on first boot and fills it with the bundled files.
 
 The prebuilt apps in `disk/Apps/esp32s3/` and `disk/Apps/esp32p4/` are embedded into the firmware, so
 the build works without building them first. `tools/build_apps.sh esp32s3|esp32p4` and
@@ -375,8 +377,8 @@ docs/            design notes, performance log, hardware notes, the build brief,
 INTERVENTIONS.md every manual action by the human
 partitions_esp32s3.csv, partitions_esp32p4.csv   flash layout, one per board
 sdkconfig.defaults and sdkconfig.defaults.esp32s3 / .esp32p4   the configuration both boards share
-                 and what each adds; sdkconfig itself is what the last `idf.py set-target` wrote
-CMakePresets.json   one configure preset per board, for the ESP-IDF VS Code extension
+                 and what each adds; each preset's sdkconfig is generated in its build directory
+CMakePresets.json   one configure preset per board, for idf.py --preset and the VS Code extension
 ```
 
 Deep dives: [docs/OS-REPORT.md](docs/OS-REPORT.md) (what was built),

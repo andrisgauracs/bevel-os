@@ -8,7 +8,7 @@
   "configurePresets": [
     {
       "name": "esp32s3",
-      "binaryDir": "${sourceDir}/build-esp32s3",
+      "binaryDir": "build-esp32s3",
       "cacheVariables": {
         "IDF_TARGET": "esp32s3",
         "SDKCONFIG_DEFAULTS": "${sourceDir}/sdkconfig.defaults",
@@ -41,7 +41,7 @@
     },
     {
       "name": "esp32p4",
-      "binaryDir": "${sourceDir}/build-esp32p4",
+      "binaryDir": "build-esp32p4",
       "cacheVariables": {
         "IDF_TARGET": "esp32p4",
         "SDKCONFIG_DEFAULTS": "${sourceDir}/sdkconfig.defaults",
