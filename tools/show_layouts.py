@@ -32,5 +32,5 @@ with open("layout_review.txt", "w", encoding="utf-8") as out:
         out.write("== %s\n" % name)
         for lst, lab in ((pos, "top"), (r1, "r1"), (r2, "r2"), (r3, "r3")):
             out.write("  %s: %s\n" % (lab, "  ".join("%s=%s" % (l, tab.get(u, "?")) for u, l in lst)))
-        out.write("  key next to left shift: %s\n" % tab.get(0x31, "?"))
+        out.write("  key next to left shift: %s\n" % tab.get(0x64, "?"))
 print(open("layout_review.txt", encoding="utf-8").read())

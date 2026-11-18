@@ -10,8 +10,9 @@ The generator maps the X keyboard key names onto the USB HID usage codes the boa
 sees, keeps only the characters the Bevel OS fonts can draw, and writes
 main/layout_gen.c (the tables declared in main/layout.h).
 
-The key next to the left Shift (the ISO keyboards' extra key) carries the hash on
-German and United Kingdom keyboards, so it gets the hash as its AltGr character.
+ANSI and ISO keyboards need no separate tables: USB reports each physical position
+with its own usage, so one table serves both shapes. A keyboard simply has no way to
+press the extra ISO key if it is ANSI.
 
 Usage: python3 tools/gen_layouts.py [--check]
 """
@@ -26,8 +27,9 @@ OUT_C = os.path.normpath(os.path.join(HERE, "..", "main", "layout_gen.c"))
 # X keyboard key name -> USB HID usage. The names name physical key positions,
 # counted from the US keyboard: AD01 is the key US prints Q on, AC10 the key it
 # prints ; on, and so on. LSGT is the extra key ISO keyboards have next to the
-# left Shift (usage 0x31); BKSL is the extra key at the right of Enter, which
-# keyboards report as usage 0x64.
+# left Shift (usage 0x64). BKSL is the key above Enter on ANSI keyboards (usage 0x31)
+# and the one left of Enter on ISO keyboards, which reports 0x32 or, on many
+# keyboards, 0x31: build_layout() gives both usages the same characters, as Linux does.
 POS = {}
 POS["TLDE"] = 0x35
 for i in range(10):
@@ -44,8 +46,8 @@ for i, n in enumerate(ROW2):
     POS[n] = [0x04, 0x16, 0x07, 0x09, 0x0A, 0x0B, 0x0D, 0x0E, 0x0F, 0x33, 0x34][i]
 for i, n in enumerate(ROW3):
     POS[n] = [0x1D, 0x1B, 0x06, 0x19, 0x05, 0x11, 0x10, 0x36, 0x37, 0x38][i]
-POS["LSGT"] = 0x31
-POS["BKSL"] = 0x64
+POS["LSGT"] = 0x64
+POS["BKSL"] = 0x31
 POS["SPCE"] = 0x2C
 
 # symbols the fonts have glyphs for, and the X keyboard names for them
@@ -77,7 +79,7 @@ NAMES = {
     "sterling": 0xA3, "section": 0xA7, "degree": 0xB0, "twosuperior": 0xB2, "threesuperior": 0xB3,
     "onesuperior": 0xB9, "mu": 0xB5, "exclamdown": 0xA1, "questiondown": 0xBF, "notsign": 0xAC,
     "onequarter": 0xBC, "onehalf": 0xBD, "threequarters": 0xBE, "cent": 0xA2, "plusminus": 0xB1,
-    "brokenbar": 0xA6, "currency": 0xA4, "yen": 0xA5, "ae": 0xE6, "AE": 0xC3,
+    "brokenbar": 0xA6, "currency": 0xA4, "yen": 0xA5, "ae": 0xE6, "AE": 0xC6,
     "periodcentered": 0xB7, "guillemotleft": 0xAB, "guillemotright": 0xBB,
     "copyright": 0xA9, "registered": 0xAE, "division": 0xF7, "multiply": 0xD7,
 }
@@ -90,18 +92,19 @@ DEAD_CODE = {"": 0, "circumflex": 1, "grave": 2, "acute": 3, "diaeresis": 4, "ti
 ORDER = ["us", "gb", "de", "fr", "es", "ch_de", "ch_fr"]
 DISPLAY = {"us": "US", "gb": "United Kingdom", "de": "German", "fr": "French",
            "es": "Spanish", "ch_de": "Swiss German", "ch_fr": "Swiss French"}
-# which sections build each layout, in order: later sections win
+# which sections build each layout, in order: later sections win. pc105 is the default
+# for the extra ISO key, for the layouts that do not define their own.
 BUILD = {
-    "us": ["latin_basic", "us_basic"],
-    "gb": ["latin_basic", "gb_basic"],
-    "de": ["latin_basic", "latin_type4", "de_basic"],
-    "fr": ["latin_basic", "fr_basic"],
-    "es": ["latin_basic", "latin_type4", "es_basic"],
-    "ch_de": ["latin_basic", "ch_basic"],
-    "ch_fr": ["latin_basic", "ch_basic", "ch_fr"],
+    "us": ["pc105", "latin_basic", "us_basic"],
+    "gb": ["pc105", "latin_basic", "gb_basic"],
+    "de": ["pc105", "latin_basic", "latin_type4", "de_basic"],
+    "fr": ["pc105", "latin_basic", "fr_basic"],
+    "es": ["pc105", "latin_basic", "latin_type4", "es_basic"],
+    "ch_de": ["pc105", "latin_basic", "ch_basic"],
+    "ch_fr": ["pc105", "latin_basic", "ch_basic", "ch_fr"],
 }
 
-MIN_U, MAX_U = 4, 100   # usage 0x64 = 100 is the extra key right of Enter on ISO keyboards
+MIN_U, MAX_U = 4, 100   # usage 0x64 = 100 is the extra key next to the left Shift on ISO keyboards
 GLYPHS = set()  # filled from the font source files in main()
 SECTIONS = {}
 
@@ -187,6 +190,9 @@ def build_layout(name):
                 # a later section replaces the key, so the state is set and not added on
                 cp[u][i] = code
                 dead[u][i] = DEAD_CODE[d]
+    # the ISO key left of Enter may report either usage (see POS)
+    cp[0x32] = list(cp[0x31])
+    dead[0x32] = list(dead[0x31])
     # the space bar prints a space on every keyboard
     cp[0x2C] = [0x20, 0x20, 0x20, 0x20]
     for u in range(MIN_U, MAX_U + 1):

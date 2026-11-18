@@ -1,3 +1,7 @@
+xkb_symbols "pc105" {
+    key <LSGT> { [ less, greater, bar, brokenbar ] };
+};
+
 xkb_symbols "latin_basic" {
     key <AE01> { [ 1, exclam, onesuperior, exclamdown ] };
     key <AE02> { [ 2, at, twosuperior, oneeighth ] };
