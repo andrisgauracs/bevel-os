@@ -67,8 +67,12 @@ at 2x, not photos. More in [captures/](captures/), all from the real board.
   on another machine shows the screen and takes that browser's mouse, wheel and keyboard (keys go
   over as physical keys, so the board's keyboard layout applies). There is no password: anyone on
   the network can use it while it is on, so it is off until switched on. `main/remote.c`. Its
-  Files button opens `http://<board address>/files`, which lists the drive and the SD card,
-  downloads and uploads files, and renames, deletes and makes folders (`main/remote_files.c`).
+  Files button opens `http://<board address>/files`, which lists the drive, the SD card and a USB
+  stick, downloads and uploads files, and renames, deletes and makes folders (`main/remote_files.c`).
+- USB sticks: a FAT-formatted stick on the USB host port, directly or behind a hub, appears as
+  `/disk/USB` in Files, the file dialogs, apps and the web file browser. Eject (the button inside
+  the drive, File > Eject, the right-click menu or `eject` in the Terminal) unmounts a stick or an
+  SD card so it can be taken out safely.
 - Original look in the mid-90s style: own bitmap fonts, icons and cursors (drawn as ASCII art in
   `tools/assets/src/`), no copied artwork.
 
@@ -176,9 +180,14 @@ C and a little assembly). The full description is in [docs/OS-REPORT.md](docs/OS
   other core broke beam racing; see [docs/PERF.md](docs/PERF.md)). USB, the drive, the serial
   channel and loaded apps run on core 0.
 - **Input** (`main/usb_input.c`, `main/input.c`): USB host HID on GPIO19/20 with a report
-  descriptor parser, so boot keyboards, relative mice and absolute pointers all work. Hub support
-  is enabled in the USB host stack, and a watchdog revives the port after a failed enumeration.
-- **Storage** (`main/storage.c`, `partitions.csv`): there is **no SD card**. The drive is a
+  descriptor parser, so boot keyboards, relative mice and absolute pointers all work, directly or
+  behind a hub. A watchdog revives the port after a failed enumeration. The S3's controller has 8
+  host channels, so devices the OS cannot use (a dock's billboard device or network adapter) are
+  turned away during enumeration.
+- **USB sticks** (`main/usb_storage.c`): Espressif's `usb_host_msc` driver, mounted at `/disk/USB`.
+  Input comes first: a stick is claimed once the bus is quiet, is left unmounted if too few host
+  channels remain, and gives its channels back if a keyboard or mouse needs them later.
+- **Storage** (`main/storage.c`, `partitions.csv`): the S3 board has **no SD card**. The drive is a
   12 MB wear-levelled FAT partition in the board's own flash, mounted at `/disk`. It is formatted
   automatically if it cannot be mounted. The bundled apps and sample files are also embedded in the
   firmware and are written back to the drive when they are missing or when the firmware changes
@@ -310,10 +319,13 @@ To rebuild `Doom.elf` from source: `tools/build_doom.sh esp32s3` or `tools/build
 
 ## Limitations
 
-- **Two USB devices at once has not worked.** A single keyboard, a single mouse, or a combined
-  keyboard-and-mouse receiver works. Hub support is enabled but was never seen working: the
-  "splitter" tried was a Y-cable, not a hub, and two USB-C multiport dongles failed (one is not
-  detected at all, the other fails the first USB request).
+- **USB host channels are scarce on the S3.** It has 8: every device takes one, a hub a second,
+  each keyboard or mouse interface one more, and a stick two more. A plain hub with a
+  keyboard-and-mouse receiver and a stick uses all 8; behind a dock with two internal hubs, the
+  stick stays unmounted. The P4 has 16.
+- **USB is full speed on both boards** (about 500 KB/s reading and 800 KB/s writing measured with a
+  1 GB stick on the S3). **Sticks must be FAT formatted**, exFAT and NTFS are not supported, and only
+  one is used at a time.
 - **The browser is text only:** no images, JavaScript, style sheets or form POSTs. Google search
   needs JavaScript and fails; typing words in the address bar searches FrogFind instead.
 - **The Wi-Fi password is stored in plain text** on the drive (`/disk/System/wifi.ini`).
@@ -406,4 +418,4 @@ repository. To build without Doom, remove the `"${APP_DIR}/Doom.elf"` line from 
 in `main/CMakeLists.txt` and the `BUNDLED(Doom, ...)` line in `main/storage.c`.
 
 The Doom shareware data file (`doom1.wad`, id Software) is not included. The ESP-IDF components
-`elf_loader` and `usb_host_hid` (Apache-2.0) are downloaded by the component manager at build time.
+`elf_loader`, `usb_host_hid` and `usb_host_msc` (Apache-2.0) are downloaded by the component manager at build time.

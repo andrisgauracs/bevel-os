@@ -21,6 +21,7 @@ folder was left out to save space.
   downloads it to `third_party/wad/doom1.wad` and checks its MD5
   (`f0cefca49926d00903cf57551d901abe`, shareware v1.9). Any copy of the shareware v1.9 `doom1.wad`
   works.
-- **ESP-IDF components** `espressif/elf_loader` and `espressif/usb_host_hid` (Apache-2.0). The
+- **ESP-IDF components** `espressif/elf_loader`, `espressif/usb_host_hid` and
+  `espressif/usb_host_msc` (Apache-2.0). The
   ESP-IDF component manager downloads them into `managed_components/` on the first build, at the
   versions pinned in `dependencies.lock`.

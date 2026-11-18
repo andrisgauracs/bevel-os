@@ -41,4 +41,11 @@
   that the loader's validator rejects. Bundled programs on the drive are refreshed when the firmware's
   build stamp (`/disk/System/firmware.id`) changes.
 - USB hubs: CONFIG_USB_HOST_HUBS_SUPPORTED=y. The hub and its devices draw power from the box's "5V" port.
+- USB sticks (FAT only) mount at /disk/USB. Eject is in Files (button inside the drive, File menu, right-click)
+  and the Terminal, for sticks and SD cards. Host channels are the limit on the S3 (8): a hub takes 2, a stick 3,
+  a Logitech receiver 3 (and a fourth for a moment, while its vendor interface is looked at). Input goes first and
+  can take a stick's channels back. An ejected stick needs replugging; an ejected SD card stays unmounted until
+  it has been taken out, which the card task notices by trying a read-only mount every few seconds.
+- All stick I/O goes through 8 KB chunks in usb_storage.c: usb_host_msc grows one DMA buffer to the largest
+  transfer, and if that allocation fails it keeps a freed pointer.
 
