@@ -10,7 +10,7 @@
 #define BOARD_HAS_TOUCH       1       // GT911 on the shared I2C bus
 #define BOARD_HAS_RTC         1       // RX8025T at 0x32
 #define BOARD_HAS_I2C         1
-#define BOARD_HAS_AUDIO       1       // PCM5102 on the JP1 header; the on-board ES8311 is unused
+#define BOARD_HAS_AUDIO       1       // PCM5102 on the JP1 header, or the on-board ES8311 and speaker
 #define BOARD_HAS_SD          1       // microSD on SDMMC slot 0
 #define BOARD_HAS_ETH         1       // IP101GR PHY on RMII
 #define BOARD_HAS_CAMERA      1       // OV02C10 on MIPI-CSI, SCCB on the shared I2C bus (app_camera.c)
@@ -36,7 +36,12 @@
 #define BOARD_I2S_DOUT        2       // PCM5102 DIN
 #define BOARD_I2S_BCLK        3       // PCM5102 BCK
 #define BOARD_I2S_MCLK        4       // PCM5102 SCK
-#define BOARD_PIN_PA_EN       11      // on-board NS4150 speaker amplifier enable (kept off)
+// The on-board ES8311 codec (I2C 0x18, I2S slave, MCLK = 256 x fs) and its NS4150 speaker amplifier
+#define BOARD_ES8311_WS       10
+#define BOARD_ES8311_DOUT     9
+#define BOARD_ES8311_BCLK     12
+#define BOARD_ES8311_MCLK     13
+#define BOARD_PIN_PA_EN       11      // NS4150 enable, active high
 
 // microSD: SDMMC slot 0, 4 bit, powered from the P4's internal LDO channel 4
 #define BOARD_SD_CLK          43

@@ -1,4 +1,4 @@
-// Sound: a small software mixer feeding a PCM5102 DAC over I2S (44.1 kHz, 16 bit, stereo).
+// Sound: a small software mixer feeding one I2S output (44.1 kHz, 16 bit, stereo).
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
@@ -12,6 +12,13 @@ bool audio_ok(void);
 // Master volume, 0..100 (saved with the settings), and whether the OS makes its own sounds.
 extern int audio_volume;
 extern int audio_system_sounds;
+
+// Where the sound goes. The change happens in the mixer task, between two blocks of sound; if the
+// speaker cannot be started, audio_output() goes back to the external DAC.
+enum { AUDIO_OUT_EXTERNAL = 0, AUDIO_OUT_SPEAKER, AUDIO_OUT_COUNT };
+int  audio_output(void);
+void audio_set_output(int output);
+const char *audio_output_name(int output);
 
 // Play a block of samples once. The samples must stay valid until the voice ends or is stopped
 // (audio_stop_owner() is called for a loaded app when it ends). vol 0..255, pan 0 (left)..255 (right).

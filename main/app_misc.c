@@ -51,6 +51,7 @@ void settings_load(void)
 #if BOARD_HAS_AUDIO
         else if (!strcmp(line, "volume") && v >= 0 && v <= 100) audio_volume = v;
         else if (!strcmp(line, "sounds")) audio_system_sounds = v != 0;
+        else if (!strcmp(line, "audio_output")) audio_set_output(v);
 #endif
         else if (!strcmp(line, "zone")) {
             for (int i = 0; i < clock_zone_count(); i++) if (!strcmp(eq + 1, clock_zone_name(i))) clock_set_zone(i);
@@ -76,7 +77,7 @@ bool settings_save(void)
                "brightness=%d\n"
 #endif
 #if BOARD_HAS_AUDIO
-               "volume=%d\nsounds=%d\n"
+               "volume=%d\nsounds=%d\naudio_output=%d\n"
 #endif
                "zone=%s\nlayout=%s\nremote=%d\n",
             shell_desktop_color, input_mouse_speed, input_repeat_delay, input_repeat_rate,
@@ -84,7 +85,7 @@ bool settings_save(void)
             disp_get_brightness(),
 #endif
 #if BOARD_HAS_AUDIO
-            audio_volume, audio_system_sounds,
+            audio_volume, audio_system_sounds, audio_output(),
 #endif
             clock_zone_name(clock_zone()), layout_name[input_layout_get()], remote_on());
     if (fclose(f) != 0) return false;
@@ -94,8 +95,8 @@ bool settings_save(void)
 
 static window_t *s_set;
 static struct {
-    widget_t *colors, *speed, *delay, *rate, *bright, *volume, *sounds, *zones, *layouts, *remote, *remote_url;
-    uint8_t old_color; int old_speed, old_delay, old_rate, old_bright, old_volume, old_sounds, old_zone, old_layout;
+    widget_t *colors, *speed, *delay, *rate, *bright, *volume, *output, *sounds, *zones, *layouts, *remote, *remote_url;
+    uint8_t old_color; int old_speed, old_delay, old_rate, old_bright, old_volume, old_output, old_sounds, old_zone, old_layout;
     bool old_remote;
 } s_sd;
 
@@ -104,6 +105,21 @@ static void colors_get(widget_t *lv, int i, lv_item_t *it) { it->text = s_colors
 static void zones_get(widget_t *lv, int i, lv_item_t *it) { it->text = clock_zone_name(i); }
 
 static void layouts_get(widget_t *lv, int i, lv_item_t *it) { it->text = layout_name[i]; }
+
+#if BOARD_HAS_AUDIO
+static void outputs_get(widget_t *lv, int i, lv_item_t *it) { it->text = audio_output_name(i); }
+
+// The taskbar's volume icon changed something and has saved it: an open Settings window follows, and
+// Cancel no longer takes it back.
+void settings_sound_changed(void)
+{
+    if (!s_set) return;
+    s_sd.old_volume = audio_volume;
+    s_sd.old_output = audio_output();
+    ui_slider_set(s_sd.volume, audio_volume / 5);
+    ui_dropdown_select(s_sd.output, audio_output());
+}
+#endif
 
 // what the Remote access group says under its switch
 static void remote_text(void)
@@ -132,6 +148,8 @@ static void set_apply(widget_t *w, int code)
     int vol = ui_slider_get(s_sd.volume) * 5;
     audio_system_sounds = ui_checked(s_sd.sounds);
     if (vol != audio_volume) { audio_volume = vol; if (w == s_sd.volume) audio_chime(CHIME_INFO); }
+    int out = ui_dropdown_sel(s_sd.output);
+    if (out >= 0 && out != audio_output()) { audio_set_output(out); audio_chime(CHIME_INFO); }
 #endif
     int z = ui_dropdown_sel(s_sd.zones);
     if (z >= 0 && z != clock_zone()) clock_set_zone(z);
@@ -170,6 +188,7 @@ static void set_cancel(widget_t *b, int code)
 #if BOARD_HAS_AUDIO
     audio_volume = s_sd.old_volume;
     audio_system_sounds = s_sd.old_sounds;
+    audio_set_output(s_sd.old_output);
 #endif
     clock_set_zone(s_sd.old_zone);
     input_layout_set(s_sd.old_layout);
@@ -196,7 +215,7 @@ void app_settings(const char *arg)
     s_sd.old_bright = disp_get_brightness();
 #endif
 #if BOARD_HAS_AUDIO
-    s_sd.old_volume = audio_volume; s_sd.old_sounds = audio_system_sounds;
+    s_sd.old_volume = audio_volume; s_sd.old_sounds = audio_system_sounds; s_sd.old_output = audio_output();
 #endif
     s_sd.old_zone = clock_zone();
     s_sd.old_layout = input_layout_get();
@@ -247,13 +266,18 @@ void app_settings(const char *arg)
     gy += 52;
 #endif
 #if BOARD_HAS_AUDIO
-    ui_groupbox(w, 400, gy, 230, 72, "Sound");
+    ui_groupbox(w, 400, gy, 230, 96, "Sound");
     ui_label(w, 412, gy + 22, 70, 14, "&Volume:");
     s_sd.volume = ui_slider(w, 484, gy + 16, 136, 0, 20, audio_volume / 5);
     s_sd.volume->on_action = set_apply;
-    s_sd.sounds = ui_checkbox(w, 412, gy + 46, 200, "S&ystem sounds", audio_system_sounds);
+    ui_label(w, 412, gy + 46, 70, 14, "&Output:");
+    s_sd.output = ui_dropdown(w, 484, gy + 42, 136, outputs_get);
+    ui_dropdown_set_count(s_sd.output, AUDIO_OUT_COUNT);
+    ui_dropdown_select(s_sd.output, audio_output());
+    s_sd.output->on_action = set_apply;
+    s_sd.sounds = ui_checkbox(w, 412, gy + 70, 200, "S&ystem sounds", audio_system_sounds);
     s_sd.sounds->on_action = set_apply;
-    gy += 78;
+    gy += 102;
 #endif
     ui_groupbox(w, 400, gy, 230, 68, "Clock");
     ui_label(w, 412, gy + 20, 100, 14, "Time &zone:");

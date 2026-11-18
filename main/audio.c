@@ -1,5 +1,6 @@
-// Sound output: a PCM5102 DAC module on the board's expansion header (JP1: 3.3 V, GND, GPIO1-4),
-// wired as in the esp32_usb_cd_player project. The DAC needs no control bus, only I2S.
+// Sound output, one at a time: a PCM5102 DAC module on the board's expansion header (JP1: 3.3 V, GND,
+// GPIO1-4), which needs only I2S, or the on-board ES8311 codec with its NS4150 speaker amplifier, which
+// is set up over I2C and has a single (mono) DAC. Both are wired as in the esp32_usb_cd_player project.
 //
 // A mixer task runs at 44.1 kHz stereo. It mixes up to eight one-shot voices (system sounds, game
 // effects; any sample rate, resampled by stepping) and one stream (the sound player), applies the
@@ -26,6 +27,9 @@ int audio_volume = 30;
 int audio_system_sounds = 1;
 
 #if BOARD_HAS_AUDIO
+
+#include "esp_codec_dev_defaults.h"
+#include "es8311_codec.h"
 
 #define RATE        44100
 #define BLOCK       256
@@ -58,6 +62,16 @@ static struct {
     volatile bool open, paused;
     void *owner;
 } s_st;
+
+static const i2s_std_gpio_config_t s_out_pins[AUDIO_OUT_COUNT] = {
+    [AUDIO_OUT_EXTERNAL] = {.mclk = BOARD_I2S_MCLK, .bclk = BOARD_I2S_BCLK, .ws = BOARD_I2S_WS,
+                            .dout = BOARD_I2S_DOUT, .din = I2S_GPIO_UNUSED},
+    [AUDIO_OUT_SPEAKER] = {.mclk = BOARD_ES8311_MCLK, .bclk = BOARD_ES8311_BCLK, .ws = BOARD_ES8311_WS,
+                           .dout = BOARD_ES8311_DOUT, .din = I2S_GPIO_UNUSED},
+};
+static volatile int s_out_wanted = AUDIO_OUT_EXTERNAL;
+static int s_out_now = AUDIO_OUT_EXTERNAL;      // only the mixer task touches the hardware
+static const audio_codec_if_t *s_codec;
 
 static int16_t *s_chime[CHIME_COUNT];
 static int s_chime_len[CHIME_COUNT];
@@ -107,6 +121,73 @@ static void mix_block(int32_t *acc)
     }
 }
 
+// ---------------------------------------------------------------- outputs
+
+int audio_output(void) { return s_out_wanted; }
+
+void audio_set_output(int output)
+{
+    if (output >= 0 && output < AUDIO_OUT_COUNT) s_out_wanted = output;
+}
+
+const char *audio_output_name(int output)
+{
+    return output == AUDIO_OUT_SPEAKER ? "Built-in speaker" : "External DAC";
+}
+
+// Needs the I2S clocks running. A power-down resets the codec, so it is set up again every time.
+static bool speaker_on(void)
+{
+    if (!s_codec) {
+        i2c_master_bus_handle_t bus = board_i2c();
+        if (!bus) return false;
+        audio_codec_i2c_cfg_t i2c = {.addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = bus};
+        const audio_codec_ctrl_if_t *ctrl = audio_codec_new_i2c_ctrl(&i2c);
+        const audio_codec_gpio_if_t *gpio = audio_codec_new_gpio();
+        if (!ctrl || !gpio) return false;
+        es8311_codec_cfg_t cfg = {
+            .ctrl_if = ctrl,
+            .gpio_if = gpio,
+            .codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC,
+            .pa_pin = BOARD_PIN_PA_EN,
+            .master_mode = false,
+            .use_mclk = true,
+            .mclk_div = 256,
+            .hw_gain = {.pa_voltage = 5.0f, .codec_dac_voltage = 3.3f},
+        };
+        s_codec = es8311_codec_new(&cfg);
+        if (!s_codec) return false;
+    }
+    esp_codec_dev_sample_info_t fs = {.bits_per_sample = 16, .channel = 2, .sample_rate = RATE, .mclk_multiple = 256};
+    return s_codec->set_fs(s_codec, &fs) == 0 && s_codec->enable(s_codec, true) == 0
+        && s_codec->set_vol(s_codec, 0.0f) == 0;    // 0 dB: the master volume is applied in the mixer
+}
+
+static void apply_output(int output)
+{
+    int old = s_out_now;
+    if (old == AUDIO_OUT_SPEAKER && s_codec) s_codec->enable(s_codec, false);   // amplifier off first: no pop
+    i2s_channel_disable(s_tx);
+    esp_err_t err = i2s_channel_reconfig_std_gpio(s_tx, &s_out_pins[output]);
+    if (err == ESP_OK) {
+        // the old pins would otherwise keep carrying the same signals
+        const i2s_std_gpio_config_t *p = &s_out_pins[old];
+        gpio_reset_pin(p->mclk); gpio_reset_pin(p->bclk); gpio_reset_pin(p->ws); gpio_reset_pin(p->dout);
+        s_out_now = output;
+    } else {
+        ESP_LOGE(TAG, "could not move I2S to the new pins: %s", esp_err_to_name(err));
+    }
+    i2s_channel_enable(s_tx);
+    if (s_out_now == AUDIO_OUT_SPEAKER && !speaker_on()) {
+        ESP_LOGE(TAG, "the ES8311 did not start, going back to the external DAC");
+        s_out_wanted = AUDIO_OUT_EXTERNAL;
+    } else if (s_out_now != output) {
+        s_out_wanted = s_out_now;
+    } else {
+        ESP_LOGI(TAG, "output: %s", audio_output_name(output));
+    }
+}
+
 static void make_chimes(void);
 static volatile int s_chime_wanted = -1;    // asked for before the sounds were ready
 static volatile bool s_chimes_ready;
@@ -150,6 +231,7 @@ static void mixer_task(void *arg)
     s_chimes_ready = true;
     if (s_chime_wanted >= 0) audio_chime(s_chime_wanted);
     for (;;) {
+        if (s_out_wanted != s_out_now) apply_output(s_out_wanted);
         xSemaphoreTake(s_lock, portMAX_DELAY);
         mix_block(acc);
         xSemaphoreGive(s_lock);
@@ -158,6 +240,9 @@ static void mixer_task(void *arg)
         for (int i = 0; i < BLOCK * 2; i++) {
             int32_t s = acc[i] * gain >> 8;
             out[i] = s > 32767 ? 32767 : s < -32768 ? -32768 : s;
+        }
+        if (s_out_now == AUDIO_OUT_SPEAKER) {   // one DAC, which plays the left slot
+            for (int i = 0; i < BLOCK; i++) out[i * 2] = out[i * 2 + 1] = (out[i * 2] + out[i * 2 + 1]) / 2;
         }
         size_t done;
         i2s_channel_write(s_tx, out, sizeof(out), &done, portMAX_DELAY);
@@ -378,7 +463,7 @@ void audio_chime(int which)
 
 void audio_start(void)
 {
-    // the on-board speaker amplifier has no input in this configuration: keep it off
+    // the speaker amplifier stays off until the built-in speaker is chosen
     const gpio_config_t pa = {.mode = GPIO_MODE_OUTPUT, .pin_bit_mask = BIT64(BOARD_PIN_PA_EN)};
     gpio_config(&pa);
     gpio_set_level(BOARD_PIN_PA_EN, 0);
@@ -395,18 +480,12 @@ void audio_start(void)
     i2s_std_config_t std = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {
-            .mclk = BOARD_I2S_MCLK,
-            .bclk = BOARD_I2S_BCLK,
-            .ws = BOARD_I2S_WS,
-            .dout = BOARD_I2S_DOUT,
-            .din = I2S_GPIO_UNUSED,
-        },
+        .gpio_cfg = s_out_pins[AUDIO_OUT_EXTERNAL],     // settings_load() may choose the speaker next
     };
     std.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
     if (i2s_channel_init_std_mode(s_tx, &std) != ESP_OK || i2s_channel_enable(s_tx) != ESP_OK) { ESP_LOGE(TAG, "I2S setup failed"); return; }
     s_ok = true;
-    xTaskCreatePinnedToCore(mixer_task, "mixer", 4096, NULL, MIXER_PRIO, NULL, SYS_CORE);
+    xTaskCreatePinnedToCore(mixer_task, "mixer", 6144, NULL, MIXER_PRIO, NULL, SYS_CORE);   // room for the codec setup
     ESP_LOGI(TAG, "PCM5102 on I2S: LRCK %d, DIN %d, BCK %d, SCK %d", BOARD_I2S_WS, BOARD_I2S_DOUT, BOARD_I2S_BCLK, BOARD_I2S_MCLK);
 }
 

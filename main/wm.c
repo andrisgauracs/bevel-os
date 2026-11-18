@@ -858,6 +858,7 @@ static void handle_mouse(int type, int x, int y, int btn)
         if (wd->cls->mouse && type != EV_WHEEL) wd->cls->mouse(wd, type, x - c.x - wd->r.x, y - c.y - wd->r.y, btn, clicks);
         return;
     }
+    if (shell_volume_mouse(type, x, y, btn)) return;
     if (menu_is_open() && menu_mouse(type, x, y, btn)) return;
     if (ui_popup_is_open() && ui_popup_mouse(type, x, y, btn)) return;
 

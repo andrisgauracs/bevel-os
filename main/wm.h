@@ -251,6 +251,7 @@ void shell_paint_overlay(gfx_t *g, const rect_t *area);       // Alt+Tab switche
 bool shell_key(const event_t *e);                              // global keys; true if consumed
 bool shell_focus_key(const event_t *e);                        // desktop / taskbar focus
 void shell_mouse(int type, int x, int y, int btn, int clicks); // desktop + taskbar
+bool shell_volume_mouse(int type, int x, int y, int btn);      // the volume popup; true if consumed
 void shell_windows_changed(void);                              // taskbar buttons need a repaint
 void shell_focus_desktop(void);
 bool shell_has_focus(void);                                    // desktop or taskbar has the keyboard
