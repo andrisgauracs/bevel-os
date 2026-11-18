@@ -9,10 +9,12 @@
 //                  keyboard layout decides what a key types)
 //   /files, /fs/... the drive and the SD card: list, download, upload (remote_files.c)
 //
-// The screen is cut into 32x32 tiles. Each /fb request takes a fresh snapshot (at most every 30 ms),
-// compares it with the previous one and gives every changed tile the next version number; the reply
-// carries the tiles newer than what the browser has, run-length coded. The HTTP server runs all
-// requests in its one task, so nothing here needs a lock.
+// The screen is cut into 32x32 tiles. Each /fb request (at most every 30 ms) compares the screen with
+// the one copy kept here, row by row, brings the copy up to date and gives every changed tile the next
+// version number; the reply carries the tiles newer than what the browser has, run-length coded. The
+// copy is in the screen's own pixels and exists only while the server is on: on the S3 it is memory a
+// program like Doom needs. The HTTP server runs all requests in its one task, so nothing here needs a
+// lock.
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -35,7 +37,7 @@ void remote_files_register(httpd_handle_t srv);     // remote_files.c
 
 static httpd_handle_t s_srv;
 static bool s_want, s_stack_ready;
-static uint16_t *s_shot, *s_last;   // new snapshot, and the one the tile versions describe
+static pixel_t *s_last;             // the screen as the tile versions describe it
 static uint32_t s_tver[NTILES];
 static uint32_t s_ver, s_shot_ms;
 
@@ -130,26 +132,26 @@ static void take_snapshot(void)
     uint32_t now = os_uptime_ms();
     if (s_ver && now - s_shot_ms < 30) return;          // several browsers share one snapshot
     s_shot_ms = now;
-    disp_snapshot(s_shot, false);                       // with the pointer, so the browser sees it
     if (!s_ver) {
+        disp_read_rows(s_last, 0, SCREEN_H);            // with the pointer, so the browser sees it
         s_ver = 1;
         for (int t = 0; t < NTILES; t++) s_tver[t] = 1;
-    } else {
-        bool any = false;
-        for (int t = 0; t < NTILES; t++) {
-            int tx = (t % TCOLS) * TILE, ty = (t / TCOLS) * TILE;
-            int tw = SCREEN_W - tx < TILE ? SCREEN_W - tx : TILE, th = SCREEN_H - ty < TILE ? SCREEN_H - ty : TILE;
-            for (int y = 0; y < th; y++) {
-                size_t o = (size_t)(ty + y) * SCREEN_W + tx;
-                if (memcmp(s_shot + o, s_last + o, tw * 2)) {
-                    if (!any) { any = true; s_ver++; }
-                    s_tver[t] = s_ver;
-                    break;
-                }
-            }
+        return;
+    }
+    static pixel_t row[SCREEN_W];
+    bool any = false;
+    for (int y = 0; y < SCREEN_H; y++) {
+        pixel_t *old = s_last + (size_t)y * SCREEN_W;
+        disp_read_rows(row, y, 1);
+        if (!memcmp(row, old, sizeof(row))) continue;
+        if (!any) { any = true; s_ver++; }
+        for (int c = 0; c < TCOLS; c++) {
+            int tx = c * TILE, tw = SCREEN_W - tx < TILE ? SCREEN_W - tx : TILE;
+            if (!memcmp(row + tx, old + tx, tw * sizeof(pixel_t))) continue;
+            memcpy(old + tx, row + tx, tw * sizeof(pixel_t));
+            s_tver[y / TILE * TCOLS + c] = s_ver;
         }
     }
-    uint16_t *t = s_last; s_last = s_shot; s_shot = t;
 }
 
 typedef struct { httpd_req_t *req; uint8_t buf[4096]; int n; esp_err_t err; } out_t;
@@ -192,10 +194,11 @@ static esp_err_t fb_get(httpd_req_t *req)
         // runs of one colour, row after row through the tile: count (1..255), pixel (RGB565)
         int tot = tw * th, k = 0;
         while (k < tot) {
-            uint16_t px = s_last[(size_t)(ty + k / tw) * SCREEN_W + tx + k % tw];
+            pixel_t px = s_last[(size_t)(ty + k / tw) * SCREEN_W + tx + k % tw];
             int run = 1;
             while (k + run < tot && run < 255 && s_last[(size_t)(ty + (k + run) / tw) * SCREEN_W + tx + (k + run) % tw] == px) run++;
-            uint8_t rec[3] = {(uint8_t)run, (uint8_t)px, (uint8_t)(px >> 8)};
+            uint16_t c = disp_to_565(px);
+            uint8_t rec[3] = {(uint8_t)run, (uint8_t)c, (uint8_t)(c >> 8)};
             out_put(&o, rec, 3);
             k += run;
         }
@@ -237,10 +240,8 @@ static esp_err_t in_post(httpd_req_t *req)
 static void start(void)
 {
     if (s_srv || !s_stack_ready) return;
-    size_t px = (size_t)SCREEN_W * SCREEN_H;
-    if (!s_shot) s_shot = heap_caps_malloc(px * 2, MALLOC_CAP_SPIRAM);
-    if (!s_last) s_last = heap_caps_malloc(px * 2, MALLOC_CAP_SPIRAM);
-    if (!s_shot || !s_last) { ESP_LOGE(TAG, "no memory for the screen copies"); return; }
+    if (!s_last) s_last = heap_caps_malloc((size_t)SCREEN_W * SCREEN_H * sizeof(pixel_t), MALLOC_CAP_SPIRAM);
+    if (!s_last) { ESP_LOGE(TAG, "no memory for the screen copy"); return; }
     s_ver = 0;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 6144;
@@ -248,7 +249,13 @@ static void start(void)
     cfg.task_priority = 3;
     cfg.lru_purge_enable = true;    // a browser that went away without closing frees its socket
     cfg.max_uri_handlers = 12;
-    if (httpd_start(&s_srv, &cfg) != ESP_OK) { ESP_LOGE(TAG, "the web server did not start"); s_srv = NULL; return; }
+    if (httpd_start(&s_srv, &cfg) != ESP_OK) {
+        ESP_LOGE(TAG, "the web server did not start");
+        s_srv = NULL;
+        free(s_last);
+        s_last = NULL;
+        return;
+    }
     static const httpd_uri_t uris[] = {
         {.uri = "/", .method = HTTP_GET, .handler = page_get},
         {.uri = "/fb", .method = HTTP_GET, .handler = fb_get},
@@ -262,8 +269,10 @@ static void start(void)
 static void stop(void)
 {
     if (!s_srv) return;
-    httpd_stop(s_srv);
+    httpd_stop(s_srv);                  // waits for the request under way, the only user of the copy
     s_srv = NULL;
+    free(s_last);
+    s_last = NULL;
     ESP_LOGI(TAG, "web access off");
 }
 

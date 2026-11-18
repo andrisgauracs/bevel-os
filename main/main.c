@@ -48,6 +48,7 @@ void touch_inject(int n, const int *xy);
 #endif
 void settings_load(void);
 void app_loader_start(void);
+void app_stack_report(void);
 
 static void run_perf(void *arg) { perf_run(arg); }
 
@@ -80,6 +81,7 @@ bool os_serial_command(const char *cmd, char *arg)
     if (!strcmp(cmd, "perf")) { ev_call_sync(run_perf, arg); ev_call_sync(NULL, NULL); return true; }
     if (!strcmp(cmd, "wins")) { ev_call_sync(dump_windows, NULL); return true; }
     if (!strcmp(cmd, "boottime")) { boot_time_report(NULL); return true; }
+    if (!strcmp(cmd, "appstack")) { app_stack_report(); return true; }
     if (!strcmp(cmd, "cat")) {
         int n = 0;
         char *t = fs_read_all(arg, &n);

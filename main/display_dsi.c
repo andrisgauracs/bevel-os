@@ -233,7 +233,11 @@ void disp_snapshot_rows(uint16_t *dst, int y0, int rows, bool hide_cursor)
     if (hide_cursor && shown) disp_cursor_show(true);
 }
 
-void disp_snapshot(uint16_t *dst, bool hide_cursor) { disp_snapshot_rows(dst, 0, SCREEN_H, hide_cursor); }
+void disp_read_rows(pixel_t *dst, int y0, int rows)
+{
+    if (!s_pfb || !dst || y0 < 0 || rows <= 0 || y0 + rows > SCREEN_H) return;
+    memcpy(dst, s_pfb + (size_t)y0 * SCREEN_W, (size_t)SCREEN_W * rows * sizeof(pixel_t));
+}
 
 // ---------------------------------------------------------------- pointer
 

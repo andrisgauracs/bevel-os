@@ -16,7 +16,7 @@ static uint16_t s_rgb222_to_565[64];
 esp_err_t disp_init(void)
 {
     for (int v = 0; v < 64; v++)
-        s_rgb222_to_565[v] = RGB565((v & 3) * 85, ((v >> 2) & 3) * 85, ((v >> 4) & 3) * 85);
+        s_rgb222_to_565[v] = disp_to_565(v);
     return vga_init();
 }
 
@@ -39,7 +39,15 @@ void disp_present(int x, int y, int w, int h)
     (void)x; (void)y; (void)w; (void)h;   // the scan-out reads the framebuffer itself: nothing to do
 }
 
-void disp_snapshot(uint16_t *dst, bool hide_cursor) { disp_snapshot_rows(dst, 0, SCREEN_H, hide_cursor); }
+void disp_read_rows(uint8_t *dst, int y0, int rows)
+{
+    uint8_t *fb = vga_fb();
+    if (!dst || !fb || y0 < 0 || rows <= 0 || y0 + rows > SCREEN_H) return;
+    for (int y = y0; y < y0 + rows; y++, dst += SCREEN_W) {
+        memcpy(dst, fb + (size_t)y * SCREEN_W, SCREEN_W);
+        vga_cursor_overlay_row(dst, y);
+    }
+}
 
 void disp_snapshot_rows(uint16_t *dst, int y0, int rows, bool hide_cursor)
 {

@@ -22,6 +22,8 @@
 
 // Loadable apps may ask for at most this much PSRAM (the OS and its own buffers need the rest).
 #define BOARD_APP_MEM_MAX     (6 * 1024 * 1024)
+#define BOARD_APP_BIG_STACK   16384   // internal RAM, for programs over 100 KB. Doom uses under 3 KB;
+                                      // with the web page on, no free block here reaches 32 KB
 
 // VGA out through a resistor DAC: RGB222, two resistors per colour, on eight data lines, with
 // separate sync on GPIO17/18.

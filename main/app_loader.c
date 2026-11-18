@@ -720,10 +720,19 @@ void os_run_elf(const char *path)
     a->q = xQueueCreate(32, sizeof(bv_event_t));
     a->used = true;
     // big programs (Doom) recurse deeply; the stack must be internal RAM because the drive is flash
-    if (xTaskCreatePinnedToCore(app_task, a->name, len > 100000 ? 32768 : 8192, a, 3, &a->task, SYS_CORE) != pdPASS) {
+    if (xTaskCreatePinnedToCore(app_task, a->name, len > 100000 ? BOARD_APP_BIG_STACK : 8192, a, 3, &a->task, SYS_CORE) != pdPASS) {
         app_release(a);
         msgbox(NULL, "Programs", "Not enough memory to start the program.", MB_ERROR, MB_OK);
     }
+}
+
+// For the serial console: how close each running program has come to the end of its stack.
+void app_stack_report(void)
+{
+    for (int i = 0; i < MAX_APPS; i++)
+        if (s_apps[i].used && s_apps[i].task)
+            serial_printf("app %s: %u bytes of stack never used\n", s_apps[i].name,
+                          (unsigned)uxTaskGetStackHighWaterMark(s_apps[i].task));
 }
 
 int os_task_mem_kb(int task_id)

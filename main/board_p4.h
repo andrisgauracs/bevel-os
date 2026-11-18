@@ -20,6 +20,7 @@
 
 // Loadable apps may ask for at most this much PSRAM.
 #define BOARD_APP_MEM_MAX     (16 * 1024 * 1024)
+#define BOARD_APP_BIG_STACK   32768   // internal RAM, for programs over 100 KB (Doom)
 
 // Display, backlight, touch
 #define BOARD_PIN_LCD_RST     5

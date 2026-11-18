@@ -77,10 +77,17 @@ void disp_put(int x, int y, int w, int h, const pixel_t *src, int stride);
 // Show a part of the logical framebuffer (after drawing into it directly: the boot splash, the shut-down screen).
 void disp_present(int x, int y, int w, int h);
 
-// What the screen shows, converted to RGB565 into dst (SCREEN_W x SCREEN_H pixels), pointer and
-// overlays included. hide_cursor leaves the pointer out. dst is a PSRAM buffer; call from a worker task.
-void disp_snapshot(uint16_t *dst, bool hide_cursor);
-void disp_snapshot_rows(uint16_t *dst, int y0, int rows, bool hide_cursor);   // rows y0.. only, into dst
+// What rows y0.. of the screen show, converted to RGB565 into dst (SCREEN_W pixels per row), pointer
+// and overlays included. hide_cursor leaves the pointer out. Call from a worker task.
+void disp_snapshot_rows(uint16_t *dst, int y0, int rows, bool hide_cursor);
+// The same picture in this screen's own pixels, pointer included: half the memory on the VGA board.
+// disp_to_565() converts one of them.
+void disp_read_rows(pixel_t *dst, int y0, int rows);
+#if DISP_TRUE_COLOR
+static inline uint16_t disp_to_565(pixel_t p) { return p; }
+#else
+static inline uint16_t disp_to_565(pixel_t p) { return RGB565((p & 3) * 85, ((p >> 2) & 3) * 85, ((p >> 4) & 3) * 85); }
+#endif
 
 // Mouse pointer: drawn over the picture instead of into the framebuffer, so moving it costs nothing
 // in repaints. px = w*h bytes, 0xFF = transparent. Max 16x20.
