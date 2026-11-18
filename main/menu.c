@@ -351,7 +351,7 @@ void menu_paint(gfx_t *g, const rect_t *area)
             }
             int fl = item_flags(it);
             bool sel = i == l->sel, dis = fl & MI_DISABLED;
-            uint8_t fg = dis ? C_TEXT_DIS : C_TEXT;
+            pixel_t fg = dis ? C_TEXT_DIS : C_TEXT;
             if (sel) { gfx_fill(g, l->r.x + 3, y, l->r.w - 6, ITEM_H, C_SEL); fg = dis ? C_GREY : C_SEL_TEXT; }
             char text[64];
             const char *accel;

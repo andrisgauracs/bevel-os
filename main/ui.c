@@ -175,7 +175,7 @@ static void label_paint(widget_t *w, gfx_t *g)
     if (!w->text) return;
     const char *s = w->text;
     int y = 0;
-    uint8_t col = (w->flags & WF_DISABLED) ? C_TEXT_DIS : C_TEXT;
+    pixel_t col = (w->flags & WF_DISABLED) ? C_TEXT_DIS : C_TEXT;
     while (*s) {
         const char *nl = strchr(s, '\n');
         int len = nl ? (int)(nl - s) : (int)strlen(s);
@@ -727,7 +727,7 @@ void scroll_paint(gfx_t *g, const rect_t *r, const scroll_t *s, bool horizontal)
         bool down = s->pressed == i + 1;
         gfx_fill(g, bx, by, SCROLL_W, SCROLL_W, C_FACE);
         if (down) ui_draw_pressed(g, bx, by, SCROLL_W, SCROLL_W); else ui_draw_raised(g, bx, by, SCROLL_W, SCROLL_W);
-        uint8_t col = active ? C_BLACK : C_SHADOW;
+        pixel_t col = active ? C_BLACK : C_SHADOW;
         int o = down ? 1 : 0;
         if (horizontal) gfx_glyph16(g, bx + 6 + o, by + 4 + o, i ? g_arr_rt : g_arr_lf, 4, 7, col);
         else gfx_glyph16(g, bx + 4 + o, by + 6 + o, i ? g_arr_dn : g_arr_up, 7, 4, col);
@@ -841,7 +841,7 @@ static void lv_paint(widget_t *w, gfx_t *g)
             lv_item_t it = {0};
             lv->get(w, idx, &it);
             bool sel = idx == lv->sel;
-            uint8_t fg = C_TEXT;
+            pixel_t fg = C_TEXT;
             int tx = 4;
             if (it.icon) tx += 20;
             if (sel) {
@@ -1069,7 +1069,7 @@ static void dd_paint(widget_t *w, gfx_t *g)
     if (gfx_clip(g, 2, 2, bx - 2, w->r.h - 4)) {
         const bitmap_t *icon;
         const char *txt = dd_text(d, d->sel, &icon);
-        uint8_t fg = dis ? C_TEXT_DIS : C_TEXT;
+        pixel_t fg = dis ? C_TEXT_DIS : C_TEXT;
         if (ui_focused(w) && !open) {
             gfx_fill(g, 3, 3, bx - 4, w->r.h - 6, C_SEL);
             gfx_dotted(g, 3, 3, bx - 4, w->r.h - 6, C_YELLOW);
@@ -1165,7 +1165,7 @@ void ui_popup_paint(gfx_t *g, const rect_t *area)
             int y = r.y + 1 + i * LV_ROW_H;
             const bitmap_t *icon;
             const char *txt = dd_text(d, idx, &icon);
-            uint8_t fg = C_TEXT;
+            pixel_t fg = C_TEXT;
             if (idx == s_pop.hot) { gfx_fill(g, r.x + 1, y, inner_w, LV_ROW_H, C_SEL); fg = C_SEL_TEXT; }
             int tx = r.x + 5;
             if (icon) { gfx_bitmap(g, tx, y + 1, icon); tx += 20; }

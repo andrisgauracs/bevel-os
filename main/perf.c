@@ -160,7 +160,7 @@ done:
 static void bench_draw(void)
 {
     const int W = 640, H = 24;
-    uint8_t *ib = heap_caps_aligned_alloc(16, W * H, MALLOC_CAP_INTERNAL);
+    pixel_t *ib = heap_caps_aligned_alloc(16, W * H * sizeof(pixel_t), MALLOC_CAP_INTERNAL);
     if (!ib) return;
     gfx_t g;
     gfx_init(&g, ib, W, 0, 0, W, H);
@@ -180,7 +180,7 @@ static void bench_draw(void)
     report("text mono 8x16", (uint32_t)((uint64_t)R * len * 1000000 / (now_us() - t)), "glyph/s");
 
     begin(); t = now_us();
-    for (int i = 0; i < R * 10; i++) gfx_fill(&g, 10 + (i & 63), 2, 100, 20, (uint8_t)i);
+    for (int i = 0; i < R * 10; i++) gfx_fill(&g, 10 + (i & 63), 2, 100, 20, (pixel_t)i);
     report("fill rect 100x20", (uint32_t)((uint64_t)R * 10 * 1000000 / (now_us() - t)), "rect/s");
     begin(); t = now_us();
     for (int i = 0; i < R * 10; i++) {

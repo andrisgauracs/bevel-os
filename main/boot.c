@@ -46,7 +46,7 @@ static const char *const s_stage_name[BOOT_STAGE_COUNT] = {
 #define MSG_W     40            // status line, in whole mono cells: the per-cent read-out sits
 #define EXTRA_W   20            //   to its right, so both are clipped to fit
 
-static const uint8_t s_dash_pat[4] = { C_GREY, C_GREY, C_BLACK, C_BLACK };
+static const pixel_t s_dash_pat[4] = { C_GREY, C_GREY, C_BLACK, C_BLACK };
 
 static int s_stage, s_pct, s_fill;
 static uint32_t s_splash_ms, s_gone_ms = (uint32_t)-1, s_ready_ms;
@@ -64,7 +64,7 @@ extern volatile int usb_boot_wait, usb_force_cycle;
 
 // ---------------------------------------------------------------- drawing
 
-static void text2(gfx_t *g, int x, int y, const char *s, uint8_t c, int step)
+static void text2(gfx_t *g, int x, int y, const char *s, pixel_t c, int step)
 {
     for (; *s; s++, x += 16 * step) {
         unsigned ch = (unsigned char)*s;
@@ -88,12 +88,12 @@ static void shadow_text2(gfx_t *g, int x, int y, const char *s)
     text2(g, x, y, s, C_WHITE, 2);
 }
 
-static void dashed_hline(gfx_t *g, int x, int y, int w, const uint8_t *pat)
+static void dashed_hline(gfx_t *g, int x, int y, int w, const pixel_t *pat)
 {
     for (int i = 0; i < w; i++) gfx_hline(g, x + i, y, 1, pat[i & 3]);
 }
 
-static void put4(gfx_t *g, int x, int y, uint8_t c) { gfx_fill(g, x, y, 4, 4, c); }
+static void put4(gfx_t *g, int x, int y, pixel_t c) { gfx_fill(g, x, y, 4, 4, c); }
 
 static void boot_splash(void)
 {

@@ -46,7 +46,7 @@ static void sys_paint(widget_t *w, gfx_t *g)
     labels[n] = "USB stick:"; os_usb_summary(vals[n++], 64);
     labels[n] = "Display:";
 #if DISP_HAS_OVERLAYS
-    snprintf(vals[n++], 64, "%d x %d DSI panel, 64 colours + overlays", SCREEN_W, SCREEN_H);
+    snprintf(vals[n++], 64, "%d x %d DSI panel, 16-bit colour", SCREEN_W, SCREEN_H);
 #else
     // no true-colour layers on the VGA scan-out: the 64 colours are all there is
     snprintf(vals[n++], 64, "%d x %d VGA monitor, 64 colours", SCREEN_W, SCREEN_H);

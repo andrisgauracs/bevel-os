@@ -2,8 +2,8 @@
 //
 // Nothing ever draws straight into the framebuffer. Damage is collected as a short list of
 // rectangles; each one is painted strip by strip into a scratch buffer in internal RAM (fast, and
-// overdraw there is cheap), then handed to the display once. On the DSI panel that means converting
-// it to RGB565; on the VGA board the strip goes into PSRAM, and before it does the compositor waits
+// overdraw there is cheap), then handed to the display once. On the DSI panel that means copying it
+// into the panel's framebuffer; on the VGA board the strip goes into PSRAM, and before it does the compositor waits
 // until the scan-out is not about to read those rows ("beam racing"). Either way: flicker-free
 // updates with the minimum possible PSRAM traffic.
 #include <string.h>
@@ -13,9 +13,9 @@
 #include "esp_timer.h"
 
 #define MAX_DIRTY 12
-#define SCRATCH_BYTES (SCREEN_W * 32)
+#define SCRATCH_PX (SCREEN_W * 32)
 
-static DRAM_ATTR __attribute__((aligned(16))) uint8_t s_scratch[SCRATCH_BYTES];
+static DRAM_ATTR __attribute__((aligned(16))) pixel_t s_scratch[SCRATCH_PX];
 static DRAM_ATTR rect_t s_dirty[MAX_DIRTY];
 static DRAM_ATTR int s_ndirty;
 static comp_paint_fn s_paint;
@@ -101,7 +101,7 @@ int IRAM_ATTR comp_flush(void)
         w = x1 - x0;
 #endif
         int y = list[i].y, y_end = list[i].y + list[i].h;
-        int rows_max = SCRATCH_BYTES / w;
+        int rows_max = SCRATCH_PX / w;
 #if DISP_HAS_SCANOUT
         bool first = true;    // the beam race treats the first strip of an update differently
 #endif

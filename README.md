@@ -56,7 +56,7 @@ at 2x, not photos. More in [captures/](captures/), all from the real board.
 - Windows move, resize, minimise, maximise and close; menus, dialogs, Alt+Tab, a task list
   (Ctrl+Alt+Del). Everything works with the mouse alone and with the keyboard alone (F1 lists
   every shortcut).
-- Built-in programs: Files, Text Editor, Picture Viewer (BMP, dithered to 64 colours), Terminal,
+- Built-in programs: Files, Text Editor, Picture Viewer (BMP: 16-bit colour on the P4, dithered to 64 colours on the S3), Terminal,
   Settings, System Information, Tasks, Help, Benchmark, Widget Gallery, Network (Wi-Fi) and
   Browser. On the P4 board also Camera (live picture, pictures saved as BMP) and Sound Player.
 - Loadable programs: ELF files in `/disk/Apps`, run in their own task through a 24-function API

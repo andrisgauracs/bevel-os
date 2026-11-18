@@ -12,7 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-uint8_t shell_desktop_color = C_TEAL;
+uint8_t shell_desktop_color = RGB222_8(0, 2, 2);   // a palette byte, as saved in the settings
 
 enum { SF_NONE, SF_DESKTOP, SF_TASKBAR };
 static int s_focus = SF_DESKTOP;
@@ -146,7 +146,7 @@ static void task_btn_rect(int i, rect_t *r)
 
 void shell_paint_desktop(gfx_t *g, const rect_t *area)
 {
-    gfx_fill(g, 0, 0, SCREEN_W, DESK_H, shell_desktop_color);
+    gfx_fill(g, 0, 0, SCREEN_W, DESK_H, gfx_from8(shell_desktop_color));
     for (int i = 0; i < s_desk_n; i++) {
         rect_t r;
         desk_cell(i, &r);
@@ -327,7 +327,7 @@ void shell_open_start_menu(void)
 
 static void halt_screen(void)
 {
-    uint8_t *fb = disp_fb();
+    pixel_t *fb = disp_fb();
     gfx_t g;
     disp_cursor_show(false);
     gfx_init(&g, fb, SCREEN_W, 0, 0, SCREEN_W, SCREEN_H);

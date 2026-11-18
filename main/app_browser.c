@@ -596,7 +596,7 @@ static int first_box_at(browser_t *b, int y)
     return lo;
 }
 
-static void big_text(gfx_t *g, int x, int y, const char *s, int n, uint8_t col)
+static void big_text(gfx_t *g, int x, int y, const char *s, int n, pixel_t col)
 {
     for (int i = 0; i < n; ) {
         int b;
@@ -638,7 +638,7 @@ static void view_paint(widget_t *w, gfx_t *g)
             if (sel) gfx_dotted(g, px - 1, py - 1, x->w + 2, x->h + 2, foc ? C_BLACK : C_DKGREY);
             continue;
         }
-        uint8_t col = (x->style & ST_LINK) ? C_BLUE : (x->style & ST_DIM) ? C_DKGREY : C_BLACK;
+        pixel_t col = (x->style & ST_LINK) ? C_BLUE : (x->style & ST_DIM) ? C_DKGREY : C_BLACK;
         // words of one link on one line are joined: the gap gets the underline / highlight too
         int gap = 0;
         if (i > 0 && x->link >= 0 && b->boxes[i - 1].link == x->link && b->boxes[i - 1].y + b->boxes[i - 1].h == x->y + x->h &&

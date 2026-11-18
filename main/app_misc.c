@@ -1,4 +1,4 @@
-// Settings (saved to the drive), the picture viewer (BMP with dithering) and the terminal.
+// Settings (saved to the drive), the picture viewer (BMP) and the terminal.
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -23,9 +23,9 @@
 #define SETTINGS_FILE DISK_ROOT "/System/settings.ini"
 
 static const struct { const char *name; uint8_t color; } s_colors[] = {
-    {"Teal", RGB222(0, 2, 2)}, {"Navy", RGB222(0, 0, 2)}, {"Slate", RGB222(1, 1, 2)}, {"Forest", RGB222(0, 1, 0)},
-    {"Plum", RGB222(1, 0, 1)}, {"Maroon", RGB222(1, 0, 0)}, {"Olive", RGB222(1, 1, 0)}, {"Storm", RGB222(0, 1, 1)},
-    {"Grey", RGB222(1, 1, 1)}, {"Black", RGB222(0, 0, 0)}, {"Sky", RGB222(1, 2, 3)}, {"Sand", RGB222(2, 2, 1)},
+    {"Teal", RGB222_8(0, 2, 2)}, {"Navy", RGB222_8(0, 0, 2)}, {"Slate", RGB222_8(1, 1, 2)}, {"Forest", RGB222_8(0, 1, 0)},
+    {"Plum", RGB222_8(1, 0, 1)}, {"Maroon", RGB222_8(1, 0, 0)}, {"Olive", RGB222_8(1, 1, 0)}, {"Storm", RGB222_8(0, 1, 1)},
+    {"Grey", RGB222_8(1, 1, 1)}, {"Black", RGB222_8(0, 0, 0)}, {"Sky", RGB222_8(1, 2, 3)}, {"Sand", RGB222_8(2, 2, 1)},
 };
 #define NCOLORS ((int)(sizeof(s_colors) / sizeof(s_colors[0])))
 
@@ -163,7 +163,7 @@ static void set_apply(widget_t *w, int code)
 
 static void swatch_paint(widget_t *w, gfx_t *g)
 {
-    gfx_fill(g, 0, 0, w->r.w, w->r.h, shell_desktop_color);
+    gfx_fill(g, 0, 0, w->r.w, w->r.h, gfx_from8(shell_desktop_color));
     ui_draw_sunken(g, 0, 0, w->r.w, w->r.h);
     gfx_bitmap(g, (w->r.w - 32) / 2, 8, &icon32_folder);
     gfx_text(g, (w->r.w - gfx_text_w("Folder", -1, FONT_UI)) / 2, 44, "Folder", -1, FONT_UI, C_WHITE);
@@ -309,7 +309,7 @@ void app_settings(const char *arg)
 typedef struct {
     window_t *win;
     widget_t *canvas;
-    uint8_t *px;
+    pixel_t *px;
     int w, h, zoom, sx, sy;
     bool drag;
     int dx, dy;
@@ -318,14 +318,16 @@ typedef struct {
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 static uint16_t rd16(const uint8_t *p) { return p[0] | p[1] << 8; }
 
-// Load a BMP and convert it to RGB222 with Floyd-Steinberg dithering. Returns NULL and sets *err.
-uint8_t *bmp_load(const char *path, int *out_w, int *out_h, const char **err)
+// Load a BMP into screen pixels: true colour where the screen has it, otherwise RGB222 with
+// Floyd-Steinberg dithering. Returns NULL and sets *err.
+pixel_t *bmp_load(const char *path, int *out_w, int *out_h, const char **err)
 {
     FILE *f = fopen(path, "rb");
     *err = "The file could not be opened.";
     if (!f) return NULL;
     uint8_t hdr[54];
-    uint8_t *out = NULL, *row = NULL;
+    pixel_t *out = NULL;
+    uint8_t *row = NULL;
     int16_t *e0 = NULL, *e1 = NULL;
     uint8_t pal[256][4];
     *err = "This is not a BMP picture.";
@@ -349,7 +351,7 @@ uint8_t *bmp_load(const char *path, int *out_w, int *out_h, const char **err)
     }
     int stride = ((w * bpp + 31) / 32) * 4;
     *err = "Not enough memory for this picture.";
-    out = heap_caps_malloc(w * h, MALLOC_CAP_SPIRAM);
+    out = heap_caps_malloc((size_t)w * h * sizeof(pixel_t), MALLOC_CAP_SPIRAM);
     row = heap_caps_malloc(stride, MALLOC_CAP_SPIRAM);
     e0 = heap_caps_calloc((w + 2) * 3, sizeof(int16_t), MALLOC_CAP_SPIRAM);
     e1 = heap_caps_calloc((w + 2) * 3, sizeof(int16_t), MALLOC_CAP_SPIRAM);
@@ -360,7 +362,7 @@ uint8_t *bmp_load(const char *path, int *out_w, int *out_h, const char **err)
         fseek(f, data_off + (long)file_row * stride, SEEK_SET);
         if (fread(row, 1, stride, f) != (size_t)stride) { *err = "The picture file is damaged."; free(out); out = NULL; goto done; }
         memset(e1, 0, (w + 2) * 3 * sizeof(int16_t));
-        uint8_t *d = out + y * w;
+        pixel_t *d = out + y * w;
         for (int x = 0; x < w; x++) {
             int c[3]; // r, g, b
             if (bpp >= 24) { const uint8_t *p = row + x * (bpp / 8); c[0] = p[2]; c[1] = p[1]; c[2] = p[0]; }
@@ -368,6 +370,12 @@ uint8_t *bmp_load(const char *path, int *out_w, int *out_h, const char **err)
                 int idx = bpp == 8 ? row[x] : bpp == 4 ? (row[x >> 1] >> ((x & 1) ? 0 : 4)) & 15 : (row[x >> 3] >> (7 - (x & 7))) & 1;
                 c[0] = pal[idx][2]; c[1] = pal[idx][1]; c[2] = pal[idx][0];
             }
+#if DISP_TRUE_COLOR
+            pixel_t p = RGB565(c[0], c[1], c[2]);
+            if ((p & ~(pixel_t)(DISP_OVERLAYS - 1)) == DISP_OVERLAY_KEY_BASE) p ^= 0x20;    // never an overlay's key
+            d[x] = p;
+            continue;
+#endif
             uint8_t pix = 0;
             for (int k = 0; k < 3; k++) {
                 int v = c[k] + e0[(x + 1) * 3 + k] / 16;
@@ -412,7 +420,7 @@ static void view_paint(widget_t *w, gfx_t *g)
     if (iw < w->r.w || ih < w->r.h) gfx_fill(g, 0, 0, w->r.w, w->r.h, C_DKGREY);
     if (z == 1) { gfx_blit(g, ox, oy, v->w, v->h, v->px, v->w); return; }
     // zoomed: expand one source row at a time, only the rows inside the clip
-    uint8_t line[SCREEN_W];
+    pixel_t line[SCREEN_W];
     int y_first = (g->cy0 - g->oy - oy) / z, y_last = (g->cy1 - 1 - g->oy - oy) / z;
     int x_first = (g->cx0 - g->ox - ox) / z, x_last = (g->cx1 - 1 - g->ox - ox) / z;
     if (y_first < 0) y_first = 0;
@@ -423,7 +431,7 @@ static void view_paint(widget_t *w, gfx_t *g)
     int n = (x_last - x_first + 1) * z;
     if (n > SCREEN_W) n = SCREEN_W;
     for (int y = y_first; y <= y_last; y++) {
-        const uint8_t *s = v->px + y * v->w + x_first;
+        const pixel_t *s = v->px + y * v->w + x_first;
         for (int i = 0; i < n; i++) line[i] = s[i / z];
         for (int k = 0; k < z; k++) gfx_blit(g, ox + x_first * z, oy + y * z + k, n, 1, line, n);
     }
@@ -501,7 +509,7 @@ void app_viewer(const char *arg)
     const char *err;
     int iw, ih;
     wm_busy(true);
-    uint8_t *px = bmp_load(path, &iw, &ih, &err);
+    pixel_t *px = bmp_load(path, &iw, &ih, &err);
     wm_busy(false);
     if (!px) { msgbox(NULL, "Picture Viewer", err, MB_ERROR, MB_OK); return; }
     viewer_t *v = calloc(1, sizeof(viewer_t));

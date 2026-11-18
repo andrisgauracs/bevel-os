@@ -1,10 +1,9 @@
 // Display driver for the Guition JC1060P470-V2: 1024x600 JD9165 panel on MIPI-DSI (2 lanes).
 //
 // The DSI controller scans its own RGB565 framebuffer (in PSRAM) out by DMA, so there is no
-// per-line interrupt to feed as on the VGA build. The OS keeps drawing RGB222 bytes; disp_put()
-// converts them through a lookup table into the panel's framebuffer and flushes the data cache
-// for those rows. The mouse pointer and the true-colour overlays are merged in during that
-// conversion (see display.h).
+// per-line interrupt to feed as on the VGA build. The OS draws RGB565 too; disp_put() keeps a copy in
+// the logical framebuffer, writes the rows to the panel's framebuffer and flushes the data cache for
+// them. The mouse pointer and the true-colour overlays are merged in on the way (see display.h).
 //
 // Panel init sequence and timings: the board vendor's demo, as used in the esp32_usb_cd_player and
 // p4_edge_enhancer projects (docs/JC1060P470-V2.md).
@@ -96,9 +95,9 @@ static const jd9165_lcd_init_cmd_t s_lcd_cmd[] = {
     {0x29, (uint8_t[]){0x00}, 1, 20},   // display on, 20 ms
 };
 
-static uint8_t *s_fb;           // logical framebuffer (RGB222)
-static uint16_t *s_pfb;         // the panel driver's framebuffer (RGB565)
-static uint16_t s_lut[256];
+static pixel_t *s_fb;           // logical framebuffer: the picture without pointer and overlays
+static uint16_t *s_pfb;         // the panel driver's framebuffer, what is really shown
+uint16_t disp_rgb222_lut[256];  // palette byte -> pixel; 0x40 and up are the overlay keys
 static SemaphoreHandle_t s_lock;
 static int s_brightness = -1;
 
@@ -115,29 +114,32 @@ typedef struct { uint16_t *px; int w, h, x, y; } overlay_t;
 static overlay_t s_ov[DISP_OVERLAYS];
 static int s_ov_count;
 
-// ---------------------------------------------------------------- conversion
+// ---------------------------------------------------------------- output
 
-// Convert rows of RGB222 into the panel framebuffer. Caller holds s_lock.
-static void IRAM_ATTR convert(int x, int y, int w, int h, const uint8_t *src, int stride)
+static inline bool is_key(pixel_t v) { return (v & ~(pixel_t)(DISP_OVERLAYS - 1)) == DISP_OVERLAY_KEY_BASE; }
+
+// Rows of the picture into the panel framebuffer, with overlays and pointer. Caller holds s_lock.
+static void IRAM_ATTR convert(int x, int y, int w, int h, const pixel_t *src, int stride)
 {
-    const uint16_t *lut = s_lut;
+    const uint16_t *lut = disp_rgb222_lut;
     for (int r = 0; r < h; r++, src += stride) {
         int yy = y + r;
         uint16_t *d = s_pfb + yy * SCREEN_W + x;
         if (!s_ov_count) {
-            int i = 0;
-            for (; i + 4 <= w; i += 4) {
-                d[i] = lut[src[i]]; d[i + 1] = lut[src[i + 1]]; d[i + 2] = lut[src[i + 2]]; d[i + 3] = lut[src[i + 3]];
-            }
-            for (; i < w; i++) d[i] = lut[src[i]];
+            memcpy(d, src, (size_t)w * 2);
         } else {
             // a run of one overlay's key colour is copied from that overlay's row in one go (black
             // where the key reaches past the surface); a pixel at a time cost a live camera picture
             // 34 ms a frame
             for (int i = 0; i < w;) {
-                uint8_t v = src[i];
-                if (v < 0x40) { d[i] = lut[v]; i++; continue; }
+                pixel_t v = src[i];
                 int j = i + 1;
+                if (!is_key(v)) {
+                    while (j < w && !is_key(src[j])) j++;
+                    memcpy(d + i, src + i, (size_t)(j - i) * 2);
+                    i = j;
+                    continue;
+                }
                 while (j < w && src[j] == v) j++;
                 const overlay_t *o = &s_ov[v & (DISP_OVERLAYS - 1)];
                 int oy = yy - o->y;
@@ -177,12 +179,12 @@ static bool clip(int *x, int *y, int *w, int *h)
     return *w > 0 && *h > 0;
 }
 
-void IRAM_ATTR disp_put(int x, int y, int w, int h, const uint8_t *src, int stride)
+void IRAM_ATTR disp_put(int x, int y, int w, int h, const pixel_t *src, int stride)
 {
     if (!s_pfb || x < 0 || y < 0 || x + w > SCREEN_W || y + h > SCREEN_H || w <= 0 || h <= 0) return;
-    uint8_t *d = s_fb + y * SCREEN_W + x;
-    const uint8_t *s = src;
-    for (int r = 0; r < h; r++, d += SCREEN_W, s += stride) memcpy(d, s, w);
+    pixel_t *d = s_fb + y * SCREEN_W + x;
+    const pixel_t *s = src;
+    for (int r = 0; r < h; r++, d += SCREEN_W, s += stride) memcpy(d, s, (size_t)w * 2);
     xSemaphoreTake(s_lock, portMAX_DELAY);
     convert(x, y, w, h, src, stride);
     xSemaphoreGive(s_lock);
@@ -201,7 +203,7 @@ void disp_present(int x, int y, int w, int h)
     xSemaphoreGive(s_lock);
 }
 
-uint8_t *disp_fb(void) { return s_fb; }
+pixel_t *disp_fb(void) { return s_fb; }
 
 // What the panel shows, copied out for a screen dump. The pointer is part of the panel framebuffer
 // (it is drawn during the conversion), so leaving it out means having it repainted first.
@@ -360,9 +362,11 @@ int disp_get_brightness(void) { return s_brightness < 0 ? 0 : s_brightness; }
 esp_err_t disp_init(void)
 {
     static const uint8_t lv5[4] = {0, 10, 21, 31}, lv6[4] = {0, 21, 42, 63};
-    for (int i = 0; i < 256; i++) s_lut[i] = lv5[i & 3] << 11 | lv6[(i >> 2) & 3] << 5 | lv5[(i >> 4) & 3];
+    for (int i = 0; i < 256; i++)
+        disp_rgb222_lut[i] = i < 0x40 ? lv5[i & 3] << 11 | lv6[(i >> 2) & 3] << 5 | lv5[(i >> 4) & 3]
+                                      : DISP_OVERLAY_KEY(i & (DISP_OVERLAYS - 1));
     s_lock = xSemaphoreCreateMutex();
-    s_fb = heap_caps_aligned_calloc(64, 1, SCREEN_W * SCREEN_H, MALLOC_CAP_SPIRAM);
+    s_fb = heap_caps_aligned_calloc(64, SCREEN_W * SCREEN_H, sizeof(pixel_t), MALLOC_CAP_SPIRAM);
     if (!s_fb || !s_lock) return ESP_ERR_NO_MEM;
 
     ESP_RETURN_ON_ERROR(backlight_init(), TAG, "backlight");

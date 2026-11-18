@@ -102,7 +102,7 @@ static void cv_paint(widget_t *w, gfx_t *g)
     app_t *a = w->win->user;
     if (!a || !a->canvas) return;
     if (a->overlay >= 0) disp_overlay_place(a->overlay, g->ox, g->oy);
-    gfx_blit(g, 0, 0, a->cw, a->ch, a->canvas, a->cw);
+    gfx_blit_rgb222(g, 0, 0, a->cw, a->ch, a->canvas, a->cw);
 }
 
 static bool cv_key(widget_t *w, const event_t *e)
@@ -229,32 +229,39 @@ static int api_event(bv_event_t *ev, int timeout_ms)
 }
 
 #define DRAW(stmt) do { app_t *a = cur_app(); if (a && a->canvas) { stmt; } } while (0)
-static void api_clear(int c) { DRAW(gfx_fill(&a->g, 0, 0, a->cw, a->ch, c & 63)); }
-static void api_fill(int x, int y, int w, int h, int c) { DRAW(gfx_fill(&a->g, x, y, w, h, c & 63)); }
-static void api_frame(int x, int y, int w, int h, int c) { DRAW(gfx_frame(&a->g, x, y, w, h, c & 63)); }
-static void api_pixel(int x, int y, int c) { DRAW(gfx_pixel(&a->g, x, y, c & 63)); }
+static void api_clear(int c) { DRAW(gfx_fill8(&a->g, 0, 0, a->cw, a->ch, c & 63)); }
+static void api_fill(int x, int y, int w, int h, int c) { DRAW(gfx_fill8(&a->g, x, y, w, h, c & 63)); }
+static void api_frame(int x, int y, int w, int h, int c) { DRAW(gfx_frame8(&a->g, x, y, w, h, c & 63)); }
+static void api_pixel(int x, int y, int c) { DRAW(gfx_pixel8(&a->g, x, y, c & 63)); }
 static void api_line(int x0, int y0, int x1, int y1, int c)
 {
     // clamp wild coordinates so a buggy app cannot spin here for seconds
     if (x0 < -2000 || x0 > 2000 || x1 < -2000 || x1 > 2000 || y0 < -2000 || y0 > 2000 || y1 < -2000 || y1 > 2000) return;
-    DRAW(gfx_line(&a->g, x0, y0, x1, y1, c & 63));
+    DRAW(gfx_line8(&a->g, x0, y0, x1, y1, c & 63));
 }
 static int api_text(int x, int y, const char *s, int font, int c)
 {
     app_t *a = cur_app();
     if (!a || !a->canvas || !s) return 0;
-    return gfx_text(&a->g, x, y, s, -1, font < 0 || font > 2 ? 0 : font, c & 63);
+    return gfx_text8(&a->g, x, y, s, -1, font < 0 || font > 2 ? 0 : font, c & 63);
 }
 static int api_text_width(const char *s, int font) { return s ? gfx_text_w(s, -1, font < 0 || font > 2 ? 0 : font) : 0; }
 static void api_blit(int x, int y, int w, int h, const uint8_t *px)
 {
     if (!px || w <= 0 || h <= 0 || w > 255 || h > 255) return;
     bitmap_t b = {w, h, 0, 0, px};
-    DRAW(gfx_bitmap(&a->g, x, y, &b));
+    DRAW(gfx_bitmap8(&a->g, x, y, &b));
+}
+// the toolkit's raised and sunken frames, in the palette bytes of a canvas
+static void canvas_bevel(gfx_t *g, int x, int y, int w, int h, bool raised)
+{
+    uint8_t white = RGB222_8(3, 3, 3), face = RGB222_8(2, 2, 2), shadow = RGB222_8(1, 1, 1), black = RGB222_8(0, 0, 0);
+    gfx_bevel8(g, x, y, w, h, raised ? white : shadow, raised ? black : white);
+    gfx_bevel8(g, x + 1, y + 1, w - 2, h - 2, raised ? face : black, raised ? shadow : face);
 }
 static void api_bevel(int x, int y, int w, int h, int raised)
 {
-    DRAW(if (raised) ui_draw_raised(&a->g, x, y, w, h); else ui_draw_sunken(&a->g, x, y, w, h));
+    DRAW(canvas_bevel(&a->g, x, y, w, h, raised));
 }
 static void api_flush(void)
 {
@@ -377,7 +384,7 @@ static void gui_key_canvas(void *arg)
 {
     app_t *a = arg;
     if (a->used && a->canvas && a->overlay >= 0) {
-        memset(a->canvas, DISP_OVERLAY_KEY(a->overlay), a->cw * a->ch);
+        memset(a->canvas, DISP_OVERLAY_KEY8(a->overlay), a->cw * a->ch);
         if (a->canvas_w) ui_invalidate(a->canvas_w);
     }
 }

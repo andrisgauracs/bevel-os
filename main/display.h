@@ -1,14 +1,14 @@
-// Display: the panel of whichever board this firmware is built for. The OS always draws in its
-// 64-colour RGB222 palette, one byte per pixel, into a logical framebuffer; what happens to those
-// bytes from there is per board:
+// Display: the panel of whichever board this firmware is built for. The OS draws into a logical
+// framebuffer of pixel_t; what happens from there is per board:
 //
-//   ESP32-P4 (main/display_dsi.c): the 7" 1024x600 MIPI-DSI panel (JD9165). Every update is
-//     converted to RGB565 on its way into the panel driver's own framebuffer, which the DSI
-//     controller scans out by DMA. The mouse pointer and the true-colour overlays (camera,
-//     pictures, Doom) are added during that conversion and never touch the logical framebuffer.
-//   ESP32-S3 (main/display_vga.c, main/vga.c): the same framebuffer is scanned out straight to a
-//     resistor DAC at 640x480@60. The pointer is a sprite the scan-out interrupt draws, and the
-//     compositor waits for the beam before rewriting rows it is about to read ("beam racing").
+//   ESP32-P4 (main/display_dsi.c): the 7" 1024x600 MIPI-DSI panel (JD9165). Pixels are RGB565. Every
+//     update is copied into the panel driver's own framebuffer, which the DSI controller scans out by
+//     DMA. The mouse pointer and the true-colour overlays (camera, Doom) are added during that copy
+//     and never touch the logical framebuffer.
+//   ESP32-S3 (main/display_vga.c, main/vga.c): pixels are RGB222 bytes, the 64 colours its resistor
+//     DAC can show, and the framebuffer is scanned out straight to it at 640x480@60. The pointer is a
+//     sprite the scan-out interrupt draws, and the compositor waits for the beam before rewriting
+//     rows it is about to read ("beam racing").
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
@@ -29,15 +29,32 @@
 #define DISP_HAS_BACKLIGHT 1
 #define DISP_HAS_OVERLAYS  1
 #define DISP_HAS_SCANOUT   0
+#define DISP_TRUE_COLOR    1
 #else
 #define DISP_HAS_BACKLIGHT 0
 #define DISP_HAS_OVERLAYS  0
 #define DISP_HAS_SCANOUT   1
+#define DISP_TRUE_COLOR    0
 #endif
 
-// RGB222 pixel: bits [1:0]=R, [3:2]=G, [5:4]=B, each 0..3
-#define RGB222(r, g, b) ((uint8_t)((((b) & 3) << 4) | (((g) & 3) << 2) | ((r) & 3)))
 #define RGB565(r, g, b) ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))  // each 0..255
+
+// The palette byte: bits [1:0]=R, [3:2]=G, [5:4]=B, each 0..3. Icons, fonts, the pointer, saved
+// settings and the canvases of loadable programs are in this form on every board.
+#define RGB222_8(r, g, b) ((uint8_t)((((b) & 3) << 4) | (((g) & 3) << 2) | ((r) & 3)))
+
+// RGB222(r, g, b) is a palette colour as a pixel of this screen; gfx_from8() does the same at run time.
+#if DISP_TRUE_COLOR
+typedef uint16_t pixel_t;
+#define RGB222_L5(v) ((v) == 0 ? 0 : (v) == 1 ? 10 : (v) == 2 ? 21 : 31)
+#define RGB222(r, g, b) ((pixel_t)(RGB222_L5((r) & 3) << 11 | ((g) & 3) * 21 << 5 | RGB222_L5((b) & 3)))
+extern uint16_t disp_rgb222_lut[256];
+static inline pixel_t gfx_from8(uint8_t c) { return disp_rgb222_lut[c]; }
+#else
+typedef uint8_t pixel_t;
+#define RGB222(r, g, b) RGB222_8(r, g, b)
+static inline pixel_t gfx_from8(uint8_t c) { return c; }
+#endif
 
 // Absolute pointers (a KVM's digitiser, a tablet) report where some capture device sees the picture.
 // On the VGA board that is a capture expecting standard timing: the 640 active pixels sit centred in
@@ -53,10 +70,10 @@
 
 // Starts the panel. For the VGA board the scan-out interrupt lives on the core that calls this.
 esp_err_t disp_init(void);
-uint8_t *disp_fb(void);                 // logical framebuffer, SCREEN_W x SCREEN_H bytes
+pixel_t *disp_fb(void);                 // logical framebuffer, SCREEN_W x SCREEN_H pixels
 
-// Copy w x h pixels (RGB222, row stride `stride`) to the logical framebuffer at (x, y) and show them.
-void disp_put(int x, int y, int w, int h, const uint8_t *src, int stride);
+// Copy w x h pixels (row stride `stride`, in pixels) to the logical framebuffer at (x, y) and show them.
+void disp_put(int x, int y, int w, int h, const pixel_t *src, int stride);
 // Show a part of the logical framebuffer again (after drawing into it directly, or when an overlay changed).
 void disp_present(int x, int y, int w, int h);
 
@@ -76,8 +93,15 @@ void disp_cursor_get(int *x, int *y, bool *shown);
 // places the overlay's surface on the screen; anything drawn over the key colour (another window, a
 // menu) hides the overlay there, as with a chroma-keyed video card. Only the DSI panel can do this;
 // on the VGA board allocating a layer says so (id -1, no pixels) and the app that asked for one
-// (canvas16 in the program API) draws RGB222 instead.
-#define DISP_OVERLAY_KEY(id) ((uint8_t)(0x40 + (id)))
+// (canvas16 in the program API) draws RGB222 instead. The keys are colours the palette cannot make:
+// DISP_OVERLAY_KEY as a pixel of the screen, DISP_OVERLAY_KEY8 as a byte in a program's canvas.
+#define DISP_OVERLAY_KEY8(id) ((uint8_t)(0x40 + (id)))
+#if DISP_TRUE_COLOR
+#define DISP_OVERLAY_KEY_BASE 0x0820
+#define DISP_OVERLAY_KEY(id) ((pixel_t)(DISP_OVERLAY_KEY_BASE + (id)))
+#else
+#define DISP_OVERLAY_KEY(id) ((pixel_t)DISP_OVERLAY_KEY8(id))
+#endif
 #if DISP_HAS_OVERLAYS
 #define DISP_OVERLAYS 4
 int disp_overlay_alloc(int w, int h);               // returns an id, or -1
