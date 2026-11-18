@@ -1,15 +1,13 @@
-// VGA scan-out: 640x480@60, RGB222, one byte per pixel, framebuffer in PSRAM.
+// VGA scan-out on the ESP32-S3: 640x480@60, RGB222, one byte per pixel, framebuffer in PSRAM.
+// main/display_vga.c puts the common display API (main/display.h) on top of this.
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "display.h"
 
-#define VGA_W 640
-#define VGA_H 480
-#define VGA_ABS_SPAN_X 678   // H total 848 * 0.8: width of a standard-timing capture in our pixels
-
-// RGB222 pixel: bits [1:0]=R, [3:2]=G, [5:4]=B, each 0..3
-#define RGB222(r, g, b) ((uint8_t)((((b) & 3) << 4) | (((g) & 3) << 2) | ((r) & 3)))
+#define VGA_W SCREEN_W
+#define VGA_H SCREEN_H
 
 // Starts the panel. The scan-out interrupt runs on the core that calls this.
 esp_err_t vga_init(void);
@@ -21,7 +19,8 @@ void vga_cursor_shape(const uint8_t *px, int w, int h, int hot_x, int hot_y);
 void vga_cursor_move(int x, int y);
 void vga_cursor_show(bool on);
 void vga_cursor_get(int *x, int *y, bool *shown);
-void vga_cursor_overlay(uint8_t *dst_fb_copy); // draw the cursor into a copy of the frame (for dumps)
+// Draw the pointer into one row of an RGB222 copy of the frame (for snapshots).
+void vga_cursor_overlay_row(uint8_t *row, int y);
 
 // Beam racing: block until rows [y0,y1) can be rewritten without the scan-out reading them
 // half-way, assuming the write takes est_us. Returns the time waited in microseconds.

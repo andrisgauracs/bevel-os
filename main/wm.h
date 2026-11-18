@@ -16,7 +16,7 @@ typedef struct widget widget_t;
 #define MENUBAR_H   19
 #define BORDER_W    4       // outer frame thickness
 #define SCROLL_W    16
-#define DESK_H      (VGA_H - TASKBAR_H)
+#define DESK_H      (SCREEN_H - TASKBAR_H)
 
 // ------------------------------------------------------------------ menus
 #define MI_DISABLED 1
@@ -128,6 +128,8 @@ const char *clip_get(int *len);
 #define WF_WANT_ARROWS 0x0100
 #define WF_WANT_ESC   0x0200
 #define WF_WANT_KEYUP 0x0400   // also receives key releases (games)
+#define WF_WANT_PINCH 0x0800   // receives EV_PINCH: mouse(type, x, y, btn = scale, clicks = PINCH_*)
+#define WF_TOUCH_SCROLL 0x1000 // a finger dragged on it scrolls it: receives EV_TOUCH_SCROLL
 
 // Notification codes for on_action
 enum { UI_CLICK = 1, UI_CHANGE, UI_SELECT, UI_ACTIVATE, UI_CONTEXT };
@@ -163,11 +165,13 @@ void ui_enable(widget_t *w, bool on);
 void ui_show(widget_t *w, bool on);
 bool ui_focused(const widget_t *w);     // has focus and its window is active
 void ui_capture(widget_t *w);           // receive mouse moves/up until the button is released
+int  ui_touch_steps(int dy, int step);  // EV_TOUCH_SCROLL: whole rows of `step` pixels, keeping the rest
 void ui_notify(widget_t *w, int code);
 bool ui_caret_on(void);                 // caret blink phase
 
 widget_t *ui_label(window_t *win, int x, int y, int w, int h, const char *text);
 widget_t *ui_button(window_t *win, int x, int y, int w, int h, const char *text, void (*on_click)(widget_t *, int));
+void ui_button_icon(widget_t *b, const bitmap_t *icon);   // shown left of the text, or alone with text ""
 widget_t *ui_checkbox(window_t *win, int x, int y, int w, const char *text, bool checked);
 widget_t *ui_radio(window_t *win, int x, int y, int w, const char *text, int group, bool checked);
 bool ui_checked(const widget_t *w);
@@ -201,6 +205,13 @@ int  ui_listview_count(const widget_t *lv);
 int  ui_listview_sel(const widget_t *lv);
 void ui_listview_select(widget_t *lv, int index);       // also scrolls it into view
 void ui_listview_context_pos(widget_t *lv, int *sx, int *sy); // screen position for a context menu
+
+// Drop-down list: a field showing the chosen item; the list opens over everything on a click,
+// Space, F4 or Alt+Down. Arrows and letters change the choice while it is closed. UI_SELECT on change.
+widget_t *ui_dropdown(window_t *win, int x, int y, int w, lv_get_fn get);   // 22 pixels high
+void ui_dropdown_set_count(widget_t *dd, int count);
+int  ui_dropdown_sel(const widget_t *dd);
+void ui_dropdown_select(widget_t *dd, int index);       // no UI_SELECT
 
 // Canvas: a custom-drawn, optionally focusable area.
 typedef struct {
@@ -243,12 +254,14 @@ void shell_paint_overlay(gfx_t *g, const rect_t *area);       // Alt+Tab switche
 bool shell_key(const event_t *e);                              // global keys; true if consumed
 bool shell_focus_key(const event_t *e);                        // desktop / taskbar focus
 void shell_mouse(int type, int x, int y, int btn, int clicks); // desktop + taskbar
+bool shell_volume_mouse(int type, int x, int y, int btn);      // the volume popup; true if consumed
 void shell_windows_changed(void);                              // taskbar buttons need a repaint
 void shell_focus_desktop(void);
 bool shell_has_focus(void);                                    // desktop or taskbar has the keyboard
 void shell_open_start_menu(void);
 void shell_shutdown_dialog(void);
 extern uint8_t shell_desktop_color;
+void wallpaper_paint(gfx_t *g, pixel_t background);            // boards with BOARD_HAS_WALLPAPER
 
 // Menu internals used by wm.c
 void menu_paint(gfx_t *g, const rect_t *area);
@@ -259,3 +272,12 @@ bool menubar_key(window_t *w, const event_t *e);               // Alt / F10 / Al
 void menubar_click(window_t *w, int x, int y);
 window_t *menubar_owner(void);                                 // window whose menu bar is active, or NULL
 int  menubar_active_index(void);
+
+// Open drop-down list (ui.c), an overlay like the menus; used by wm.c
+bool ui_popup_is_open(void);
+void ui_popup_close(void);
+void ui_popup_paint(gfx_t *g, const rect_t *area);
+bool ui_popup_key(const event_t *e);                           // true if consumed
+bool ui_popup_mouse(int type, int x, int y, int btn);          // true if consumed
+bool ui_popup_scrolls_at(int x, int y);                        // a finger dragged here scrolls the list
+void ui_popup_touch_scroll(int dy);

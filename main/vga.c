@@ -7,6 +7,7 @@
 // rewriting rows that are about to be fetched (tear-free without a second framebuffer).
 #include <string.h>
 #include "vga.h"
+#include "board.h"
 #include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_heap_caps.h"
@@ -20,15 +21,15 @@
 
 static const char *TAG = "vga";
 
-// Pin map (see docs/HANDOFF.md). Do not change without asking the human: it is wired.
-#define PIN_R_LO 5
-#define PIN_R_HI 4
-#define PIN_G_LO 7
-#define PIN_G_HI 6
-#define PIN_B_LO 16
-#define PIN_B_HI 15
-#define PIN_HSYNC 17
-#define PIN_VSYNC 18
+// Pin map: the resistor DAC is built around these ones, see board_s3.h and docs/HANDOFF.md.
+#define PIN_R_LO BOARD_PIN_VGA_R_LO
+#define PIN_R_HI BOARD_PIN_VGA_R_HI
+#define PIN_G_LO BOARD_PIN_VGA_G_LO
+#define PIN_G_HI BOARD_PIN_VGA_G_HI
+#define PIN_B_LO BOARD_PIN_VGA_B_LO
+#define PIN_B_HI BOARD_PIN_VGA_B_HI
+#define PIN_HSYNC BOARD_PIN_VGA_HSYNC
+#define PIN_VSYNC BOARD_PIN_VGA_VSYNC
 
 // 640x480@60 on an integer-divided clock: 160 MHz / 6 = 26.67 MHz, H total 848 (31.45 kHz),
 // V total 525 (59.9 Hz), negative sync. The exact 25.175 MHz needs the fractional divider,
@@ -163,7 +164,11 @@ esp_err_t vga_init(void)
             .flags = { .hsync_idle_low = 0, .vsync_idle_low = 0 }, // negative sync
         },
         .data_width = 8,
-        .bits_per_pixel = 8,
+        // One byte per pixel goes straight onto the eight data lines, six of which are the resistor
+        // DAC. ESP-IDF 6.1 dropped bits_per_pixel and asks for a colour format instead; GRAY8 is the
+        // only 8-bit format it has, and the bytes really do hold 2-bit red, green and blue here.
+        .in_color_format = LCD_COLOR_FMT_GRAY8,
+        .out_color_format = LCD_COLOR_FMT_GRAY8,
         .bounce_buffer_size_px = BB_BYTES,
         .dma_burst_size = 64,
         .hsync_gpio_num = PIN_HSYNC,
@@ -220,15 +225,17 @@ void vga_cursor_get(int *x, int *y, bool *shown)
     if (shown) *shown = s_cur_on;
 }
 
-void vga_cursor_overlay(uint8_t *dst)
+// Draw the pointer into one row of a copy of the frame, for snapshots: the sprite never goes into
+// the real framebuffer, because the scan-out draws it itself.
+void vga_cursor_overlay_row(uint8_t *row, int y)
 {
     if (!s_cur_on) return;
-    for (int y = 0; y < s_cur_h; y++) {
-        for (int x = 0; x < s_cur_w; x++) {
-            int sx = s_cur_x + x, sy = s_cur_y + y;
-            uint8_t p = s_cur_px[y * CUR_MAX_W + x];
-            if (p != 0xFF && sx >= 0 && sx < VGA_W && sy >= 0 && sy < VGA_H) dst[sy * VGA_W + sx] = p;
-        }
+    int sy = y - s_cur_y;
+    if (sy < 0 || sy >= s_cur_h) return;
+    const uint8_t *s = s_cur_px + sy * CUR_MAX_W;
+    for (int x = 0; x < s_cur_w; x++) {
+        int sx = s_cur_x + x;
+        if (s[x] != 0xFF && sx >= 0 && sx < VGA_W) row[sx] = s[x];
     }
 }
 

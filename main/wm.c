@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include "wm.h"
 #include "comp.h"
-#include "vga.h"
+#include "display.h"
 #include "os.h"
 #include "esp_heap_caps.h"
 
@@ -11,6 +11,10 @@ static window_t *s_bottom, *s_top;      // z-order
 static window_t *s_dead;                // destroyed, not yet freed (linked via ->next)
 static window_t *s_active;              // window with the keyboard, NULL = shell (desktop/taskbar)
 static widget_t *s_capture;             // widget that got the mouse-down
+static widget_t *s_pinch;               // widget under a two-finger gesture
+static widget_t *s_touch_scroll;        // widget a finger is scrolling
+static bool s_touch_scroll_popup;       // ... or the open drop-down list
+static int s_touch_y, s_touch_rest;     // the finger's last height; pixels not yet a whole row
 static const bitmap_t *s_cursor, *s_cursor_wanted;
 static int s_busy;
 
@@ -290,6 +294,8 @@ static void wm_paint(gfx_t *g, const rect_t *area)
     if (area->y + area->h > DESK_H) { shell_paint_taskbar(g, area); gfx_restore(g, &st); }
     menu_paint(g, area);
     gfx_restore(g, &st);
+    ui_popup_paint(g, area);
+    gfx_restore(g, &st);
     shell_paint_overlay(g, area);
     gfx_restore(g, &st);
 }
@@ -369,6 +375,7 @@ static void raise(window_t *w)
 void wm_activate(window_t *w)
 {
     if (menu_is_open()) menu_close_all();
+    ui_popup_close();
     if (!w) { set_active(NULL); return; }
     if (!wm_valid(w) || (w->flags & (WIN_DEAD | WIN_HIDDEN))) return;
     for (window_t *d; (d = modal_child(w)) != NULL;) w = d;
@@ -402,13 +409,13 @@ window_t *wm_create(const char *title, int cw, int ch, uint16_t flags)
     w->r.w = cw + 2 * BORDER_W;
     w->r.h = ch + top_h(w) + BORDER_W;
     if (flags & WIN_DIALOG) {
-        w->r.x = (VGA_W - w->r.w) / 2;
+        w->r.x = (SCREEN_W - w->r.w) / 2;
         w->r.y = (DESK_H - w->r.h) / 2;
     } else {
         w->r.x = 30 + (cascade % 6) * 22;
         w->r.y = 16 + (cascade % 6) * 22;
         cascade++;
-        if (w->r.x + w->r.w > VGA_W) w->r.x = VGA_W - w->r.w;
+        if (w->r.x + w->r.w > SCREEN_W) w->r.x = SCREEN_W - w->r.w;
         if (w->r.y + w->r.h > DESK_H) w->r.y = DESK_H - w->r.h;
     }
     if (w->r.x < 0) w->r.x = 0;
@@ -442,6 +449,7 @@ void wm_destroy(window_t *w)
 {
     if (!w || (w->flags & WIN_DEAD)) return;
     if (menu_is_open()) menu_close_all();
+    ui_popup_close();
     wm_invalidate(w);
     w->flags |= WIN_DEAD;
     // cancel dialogs that are modal to this window
@@ -449,6 +457,8 @@ void wm_destroy(window_t *w)
         if (d->owner == w && !(d->flags & WIN_DEAD)) { d->dlg_done = true; d->dlg_result = ID_CANCEL; wm_invalidate(d); d->flags |= WIN_HIDDEN; }
     }
     if (s_capture && s_capture->win == w) s_capture = NULL;
+    if (s_pinch && s_pinch->win == w) s_pinch = NULL;
+    if (s_touch_scroll && s_touch_scroll->win == w) s_touch_scroll = NULL;
     if (s_drag.win == w) s_drag.mode = 0, s_drag.win = NULL;
     if (s_tbtn.win == w) s_tbtn.win = NULL;
     unlink_win(w);
@@ -515,8 +525,8 @@ static void set_frame(window_t *w, int x, int y, int fw, int fh)
 {
     if (fw < w->min_w) fw = w->min_w;
     if (fh < w->min_h) fh = w->min_h;
-    if (fw > VGA_W + 2 * BORDER_W) fw = VGA_W + 2 * BORDER_W;
-    if (fh > VGA_H) fh = VGA_H;
+    if (fw > SCREEN_W + 2 * BORDER_W) fw = SCREEN_W + 2 * BORDER_W;
+    if (fh > SCREEN_H) fh = SCREEN_H;
     if (x == w->r.x && y == w->r.y && fw == w->r.w && fh == w->r.h) return;
     bool resized = fw != w->r.w || fh != w->r.h;
     rect_t old = w->r, u;
@@ -533,7 +543,7 @@ static void set_frame(window_t *w, int x, int y, int fw, int fh)
 void wm_move(window_t *w, int x, int y)
 {
     // keep a grabbable part of the title bar on screen
-    if (x > VGA_W - 40) x = VGA_W - 40;
+    if (x > SCREEN_W - 40) x = SCREEN_W - 40;
     if (x < 40 - w->r.w) x = 40 - w->r.w;
     if (y < 0) y = 0;
     if (y > DESK_H - TITLE_H - BORDER_W) y = DESK_H - TITLE_H - BORDER_W;
@@ -557,7 +567,7 @@ void wm_maximize(window_t *w, bool on)
     if (on && !(w->flags & WIN_MAXIMIZED)) {
         w->restore = w->r;
         w->flags |= WIN_MAXIMIZED;
-        set_frame(w, -BORDER_W, -BORDER_W, VGA_W + 2 * BORDER_W, DESK_H + 2 * BORDER_W);
+        set_frame(w, -BORDER_W, -BORDER_W, SCREEN_W + 2 * BORDER_W, DESK_H + 2 * BORDER_W);
     } else if (!on && (w->flags & WIN_MAXIMIZED)) {
         w->flags &= ~WIN_MAXIMIZED;
         set_frame(w, w->restore.x, w->restore.y, w->restore.w, w->restore.h);
@@ -708,6 +718,7 @@ static void handle_key(const event_t *e)
     if (e->down) s_alt_clean = is_alt && !(e->mods & (MOD_CTRL | MOD_SHIFT | MOD_GUI));
     if (shell_key(e)) { if (!is_alt) s_alt_clean = false; return; }
     if (menu_is_open()) { if (e->down) menu_key(e); s_alt_clean = false; return; }
+    if (ui_popup_is_open() && ui_popup_key(e)) { s_alt_clean = false; return; }
     if (s_drag.mode >= 3) { if (e->down) kb_move_key(e); return; }
     if (s_drag.mode) return;
     if (shell_has_focus() || !s_active) { if (e->down) shell_focus_key(e); return; }
@@ -750,14 +761,17 @@ void wm_set_cursor(const bitmap_t *c)
     if (s_busy) c = &cursor_busy;
     if (c == s_cursor) return;
     s_cursor = c;
-    vga_cursor_shape(c->px, c->w, c->h, c->hot_x, c->hot_y);
+    disp_cursor_shape(c->px, c->w, c->h, c->hot_x, c->hot_y);
 }
 
 void wm_busy(bool on)
 {
     s_busy += on ? 1 : -1;
     if (s_busy < 0) s_busy = 0;
+    // hidden before the shape changes back, shown after it changed: touch never sees the arrow flash
+    if (!s_busy) input_pointer_busy(false);
     wm_set_cursor(s_cursor_wanted ? s_cursor_wanted : &cursor_arrow);
+    if (s_busy) input_pointer_busy(true);
 }
 
 static const bitmap_t *edge_cursor(int edges)
@@ -813,7 +827,8 @@ static void handle_mouse(int type, int x, int y, int btn)
         s_alt_clean = false;
         uint32_t now = os_uptime_ms();
         int dx = x - s_last_down_x, dy = y - s_last_down_y;
-        if (btn == s_last_down_btn && now - s_last_down_ms < 450 && dx > -5 && dx < 5 && dy > -5 && dy < 5 && s_last_clicks == 1) clicks = 2;
+        int tol = input_touching() ? 24 : 5;   // two taps of a finger never land on the same pixels
+        if (btn == s_last_down_btn && now - s_last_down_ms < (input_touching() ? 600 : 450) && dx > -tol && dx < tol && dy > -tol && dy < tol && s_last_clicks == 1) clicks = 2;
         s_last_down_ms = now; s_last_down_x = x; s_last_down_y = y; s_last_down_btn = btn; s_last_clicks = clicks;
     }
 
@@ -852,7 +867,9 @@ static void handle_mouse(int type, int x, int y, int btn)
         if (wd->cls->mouse && type != EV_WHEEL) wd->cls->mouse(wd, type, x - c.x - wd->r.x, y - c.y - wd->r.y, btn, clicks);
         return;
     }
+    if (shell_volume_mouse(type, x, y, btn)) return;
     if (menu_is_open() && menu_mouse(type, x, y, btn)) return;
+    if (ui_popup_is_open() && ui_popup_mouse(type, x, y, btn)) return;
 
     if (type == EV_WHEEL) {
         window_t *w = window_at(x, y);
@@ -932,6 +949,90 @@ static void handle_mouse(int type, int x, int y, int btn)
 
 void ui_capture(widget_t *w) { s_capture = w; }
 
+// A pinch goes to the widget under the fingers when it began, if that widget asked for pinches.
+static void handle_pinch(const event_t *e)
+{
+    if (e->button == PINCH_BEGIN) {
+        s_pinch = NULL;
+        if (menu_is_open() || ui_popup_is_open() || s_drag.mode || s_tbtn.win || s_capture || e->y >= DESK_H) return;
+        window_t *w = window_at(e->x, e->y);
+        int edges, lx, ly;
+        if (!w || w->modal_children || hit_test(w, e->x, e->y, &edges) != HT_CLIENT) return;
+        widget_t *wd = widget_at(w, e->x, e->y, &lx, &ly);
+        if (!wd || !(wd->flags & WF_WANT_PINCH) || (wd->flags & WF_DISABLED)) return;
+        if (w != s_active || shell_has_focus()) wm_activate(w);
+        if (focusable(wd)) ui_focus(wd);
+        s_pinch = wd;
+    }
+    widget_t *wd = s_pinch;
+    if (!wd) return;
+    rect_t c;
+    wm_client_rect(wd->win, &c);
+    wd->cls->mouse(wd, EV_PINCH, e->x - c.x - wd->r.x, e->y - c.y - wd->r.y, e->scale, e->button);
+    if (e->button == PINCH_END) s_pinch = NULL;
+}
+
+int ui_touch_steps(int dy, int step)
+{
+    s_touch_rest += dy;
+    int n = s_touch_rest / step;
+    s_touch_rest -= n * step;
+    return n;
+}
+
+// Is what the finger started on something it scrolls? Scroll bars keep working as bars.
+static bool touch_scroll_begin(int x, int y)
+{
+    s_touch_scroll = NULL;
+    s_touch_scroll_popup = false;
+    s_touch_y = y;
+    s_touch_rest = 0;
+    if (ui_popup_is_open()) return s_touch_scroll_popup = ui_popup_scrolls_at(x, y);
+    if (menu_is_open() || s_drag.mode || s_tbtn.win || s_capture || y >= DESK_H) return false;
+    window_t *w = window_at(x, y);
+    int edges, lx, ly;
+    if (!w || w->modal_children || hit_test(w, x, y, &edges) != HT_CLIENT) return false;
+    widget_t *wd = widget_at(w, x, y, &lx, &ly);
+    if (!wd || !(wd->flags & WF_TOUCH_SCROLL) || (wd->flags & WF_DISABLED) || lx >= wd->r.w - 2 - SCROLL_W) return false;
+    if (w != s_active || shell_has_focus()) wm_activate(w);
+    if (focusable(wd)) ui_focus(wd);
+    s_touch_scroll = wd;
+    input_touch_hide_pointer();
+    return true;
+}
+
+// One finger, decided here because only the window manager knows what is under it. A drag on
+// anything that does not scroll is the left button, as it always was.
+static void handle_touch(const event_t *e)
+{
+    int x = e->x, y = e->y;
+    switch (e->button) {
+    case TOUCH_TAP: input_touch(x, y, true); input_touch(x, y, false); break;
+    case TOUCH_LONG: input_touch_right_click(x, y); break;
+    case TOUCH_DRAG_BEGIN:
+        if (!touch_scroll_begin(x, y)) input_touch(x, y, true);
+        break;
+    case TOUCH_DRAG_MOVE: {
+        input_touch_latest(&x, &y);
+        int dy = y - s_touch_y;
+        if (s_touch_scroll_popup) { s_touch_y = y; ui_popup_touch_scroll(dy); }
+        else if (s_touch_scroll) {
+            widget_t *wd = s_touch_scroll;
+            rect_t c;
+            wm_client_rect(wd->win, &c);
+            s_touch_y = y;
+            if (dy) wd->cls->mouse(wd, EV_TOUCH_SCROLL, x - c.x - wd->r.x, y - c.y - wd->r.y, dy, 0);
+        } else input_touch(x, y, true);
+        break;
+    }
+    case TOUCH_DRAG_END:
+        if (!s_touch_scroll && !s_touch_scroll_popup) input_touch(x, y, false);
+        s_touch_scroll = NULL;
+        s_touch_scroll_popup = false;
+        break;
+    }
+}
+
 // ---------------------------------------------------------------- pump
 
 static uint32_t s_fps, s_fps_count, s_fps_t0;
@@ -954,6 +1055,8 @@ static void dispatch(const event_t *e)
         handle_mouse(EV_WHEEL, x, y, e->x);
         break;
     }
+    case EV_PINCH: handle_pinch(e); break;
+    case EV_TOUCH: handle_touch(e); break;
     case EV_CALL: if (e->fn) e->fn(e->arg); break;
     }
 }
@@ -989,7 +1092,7 @@ void wm_init(void)
     wm_set_cursor(&cursor_arrow);
     int x, y;
     input_mouse_pos(&x, &y);
-    vga_cursor_move(x, y);
+    disp_cursor_move(x, y);
     shell_init();
     comp_invalidate_all();
 }

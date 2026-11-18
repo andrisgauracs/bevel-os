@@ -9,7 +9,7 @@
 #pragma once
 #include <stdint.h>
 
-#define BEVEL_API_VERSION 1
+#define BEVEL_API_VERSION 2
 #define BV_RGB(r, g, b) ((uint8_t)((((b) & 3) << 4) | (((g) & 3) << 2) | ((r) & 3)))  // each 0..3
 
 enum { BV_NONE = 0, BV_KEY_DOWN, BV_KEY_UP, BV_MOUSE_DOWN, BV_MOUSE_UP, BV_MOUSE_MOVE, BV_CLOSE };
@@ -19,6 +19,8 @@ enum { BV_MOD_CTRL = 1, BV_MOD_SHIFT = 2, BV_MOD_ALT = 4 };
 enum { BV_K_A = 0x04, BV_K_D = 0x07, BV_K_N = 0x11, BV_K_P = 0x13, BV_K_R = 0x15, BV_K_S = 0x16, BV_K_W = 0x1A,
        BV_K_ENTER = 0x28, BV_K_ESC = 0x29, BV_K_SPACE = 0x2C,
        BV_K_RIGHT = 0x4F, BV_K_LEFT = 0x50, BV_K_DOWN = 0x51, BV_K_UP = 0x52 };
+enum { BV_SND_U8_MONO = 0, BV_SND_S16_MONO = 1, BV_SND_S16_STEREO = 2 };
+#define BV_RGB565(r, g, b) ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))   // each 0..255
 enum { BV_MB_OK = 1, BV_MB_YESNO = 3, BV_ID_OK = 1, BV_ID_YES = 3, BV_ID_NO = 4 };
 
 typedef struct {
@@ -63,6 +65,18 @@ typedef struct bevel_api {
     void (*log)(const char *text);                               // to the serial console
     // direct access to the canvas: w x h bytes, one RGB222 pixel each, row stride = w
     uint8_t *(*canvas)(int *w, int *h);
+
+    // ---- API version 2 ----
+    // sound: play a block of samples once. format is BV_SND_*, volume 0..255, pan 0 (left)..255
+    // (right). The samples must stay where they are while they play. Returns a voice (> 0), or 0.
+    int  (*snd_play)(const void *pcm, int frames, int rate, int format, int volume, int pan);
+    void (*snd_set)(int voice, int volume, int pan);
+    int  (*snd_playing)(int voice);
+    void (*snd_stop)(int voice);
+    // true colour: a layer of w x h RGB565 pixels that replaces the canvas on screen (the drawing
+    // calls above no longer show). Write pixels, then call flush16.
+    uint16_t *(*canvas16)(int *w, int *h);
+    void (*flush16)(void);
 } bevel_api_t;
 
 int app_main(const bevel_api_t *os, const char *arg);

@@ -5,18 +5,18 @@
 #include "wm.h"
 #include "apps.h"
 #include "os.h"
-#include "vga.h"
+#include "display.h"
 #include "comp.h"
 #include "esp_heap_caps.h"
 #include "esp_chip_info.h"
 #include "esp_psram.h"
 #include "esp_flash.h"
+#include "net.h"
 
 // ================================================================ System information
 
 static window_t *s_sys;
 static int s_sys_timer;
-static vga_stats_t s_sys_vga;
 
 static void sys_paint(widget_t *w, gfx_t *g)
 {
@@ -24,7 +24,7 @@ static void sys_paint(widget_t *w, gfx_t *g)
     int y = 0;
     gfx_bitmap(g, 4, 2, &icon32_logo);
     gfx_text(g, 48, 4, OS_NAME " " OS_VERSION, -1, FONT_UI_BOLD, C_TEXT);
-    gfx_text(g, 48, 20, "A small desktop OS for the ESP32-S3", -1, FONT_UI, C_TEXT);
+    gfx_text(g, 48, 20, "A small desktop OS for the " OS_CHIP, -1, FONT_UI, C_TEXT);
     y = 46;
     ui_draw_groove(g, 0, y - 6, w->r.w, 2);
     esp_chip_info_t chip;
@@ -32,21 +32,28 @@ static void sys_paint(widget_t *w, gfx_t *g)
     uint32_t flash = 0;
     esp_flash_get_size(NULL, &flash);
     uint32_t up = os_uptime_ms() / 1000;
-    const char *labels[10];
-    char vals[10][64];
+    const char *labels[12];
+    char vals[12][64];
     int n = 0;
-    labels[n] = "Processor:"; snprintf(vals[n++], 64, "ESP32-S3 rev %d.%d, %d cores at 240 MHz", chip.revision / 100, chip.revision % 100, chip.cores);
+    labels[n] = "Processor:"; snprintf(vals[n++], 64, OS_CHIP " rev %d.%d, %d cores at %d MHz", chip.revision / 100, chip.revision % 100, chip.cores, CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
     labels[n] = "Memory:"; snprintf(vals[n++], 64, "%u KB free of %u KB internal RAM",
         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024), (unsigned)(heap_caps_get_total_size(MALLOC_CAP_INTERNAL) / 1024));
     labels[n] = "External memory:"; snprintf(vals[n++], 64, "%u KB free of %u KB PSRAM",
         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024), (unsigned)(esp_psram_get_size() / 1024));
     labels[n] = "Flash:"; snprintf(vals[n++], 64, "%u MB", (unsigned)(flash >> 20));
-    labels[n] = "Drive:"; os_sd_summary(vals[n++], 64);
-    labels[n] = "Display:"; snprintf(vals[n++], 64, "640 x 480, 64 colours, 60 Hz VGA");
+    labels[n] = "Drive:"; os_disk_summary(vals[n++], 64);
+    labels[n] = "SD card:"; os_sd_summary(vals[n++], 64);
+    labels[n] = "USB stick:"; os_usb_summary(vals[n++], 64);
+    labels[n] = "Display:";
+#if DISP_HAS_OVERLAYS
+    snprintf(vals[n++], 64, "%d x %d DSI panel, 16-bit colour", SCREEN_W, SCREEN_H);
+#else
+    // no true-colour layers on the VGA scan-out: the 64 colours are all there is
+    snprintf(vals[n++], 64, "%d x %d VGA monitor, 64 colours", SCREEN_W, SCREEN_H);
+#endif
+    labels[n] = "Network:"; net_summary(vals[n++], 64);
     labels[n] = "Uptime:"; snprintf(vals[n++], 64, "%u:%02u:%02u", (unsigned)(up / 3600), (unsigned)(up / 60 % 60), (unsigned)(up % 60));
     labels[n] = "Screen updates:"; snprintf(vals[n++], 64, "%u per second", (unsigned)wm_fps());
-    labels[n] = "Scan-out:"; snprintf(vals[n++], 64, "%u.%u us per fill, slack %d us, %u late",
-        (unsigned)(s_sys_vga.isr_avg_us10 / 10), (unsigned)(s_sys_vga.isr_avg_us10 % 10), (int)s_sys_vga.slack_min_us, (unsigned)s_sys_vga.late);
     for (int i = 0; i < n; i++, y += 16) {
         gfx_text(g, 4, y, labels[i], -1, FONT_UI, C_TEXT);
         gfx_text(g, 124, y, vals[i], -1, FONT_UI, C_NAVY);
@@ -58,7 +65,6 @@ static const canvas_ops_t sys_ops = {sys_paint, NULL, NULL};
 static void sys_tick(void *arg)
 {
     if (!s_sys) return;
-    vga_get_stats(&s_sys_vga, true);
     for (widget_t *w = s_sys->widgets; w; w = w->next) if (!w->text) ui_invalidate(w);
 }
 static void sys_destroy(window_t *w) { timer_del(s_sys_timer); s_sys = NULL; }
@@ -67,15 +73,14 @@ static void sys_ok(widget_t *w, int code) { wm_close(w->win); }
 void app_system(const char *arg)
 {
     if (s_sys) { wm_activate(s_sys); return; }
-    window_t *w = wm_create("System", 360, 240, 0);
+    window_t *w = wm_create("System", 400, 272, 0);
     w->icon = &icon16_computer;
     w->task_id = 0;
-    ui_canvas(w, 12, 10, 336, 190, &sys_ops, false);
-    widget_t *ok = ui_button(w, 270, 206, 78, 24, "OK", sys_ok);
+    ui_canvas(w, 12, 10, 376, 222, &sys_ops, false);
+    widget_t *ok = ui_button(w, 310, 238, 78, 24, "OK", sys_ok);
     w->def_btn = ok; w->cancel_btn = ok;
     w->on_destroy = sys_destroy;
     s_sys = w;
-    vga_get_stats(&s_sys_vga, false);
     s_sys_timer = timer_add(1000, true, sys_tick, NULL);
     wm_show(w);
 }
@@ -222,7 +227,16 @@ static const char *const s_help_rows[][2] = {
     {"Ctrl+Left / Ctrl+Right", "Previous / next word"},
     {"PICTURE VIEWER", NULL},
     {"Arrow keys", "Scroll the picture"},
+    {"Left or right drag", "Scroll the picture"},
     {"+ / -", "Zoom in / out"},
+    {"F or double-click", "Fit to screen, on / off"},
+#if BOARD_HAS_TOUCH
+    {"Pinch with two fingers", "Zoom in / out, and move the picture"},
+    {"TOUCHSCREEN", NULL},
+    {"Tap", "Click"},
+    {"Touch and move", "Scroll lists, text and pages; elsewhere drag"},
+    {"Touch and hold", "Right click"},
+#endif
     {"DOOM", NULL},
     {"Arrow keys", "Move and turn"},
     {"Ctrl / Space", "Fire / open doors and use switches"},
@@ -326,6 +340,8 @@ void app_bench(const char *arg)
 static const char *const s_fruit[] = {"Apple", "Apricot", "Banana", "Blackcurrant", "Cherry", "Cloudberry", "Damson",
     "Elderberry", "Fig", "Gooseberry", "Grape", "Kiwi", "Lemon", "Lime", "Mango", "Nectarine", "Orange", "Peach", "Pear", "Plum"};
 static void fruit_get(widget_t *lv, int i, lv_item_t *it) { it->text = s_fruit[i]; it->icon = &icon16_file; }
+static const char *const s_sizes[] = {"Small", "Medium", "Large", "Extra large"};
+static void size_get(widget_t *dd, int i, lv_item_t *it) { it->text = s_sizes[i]; }
 static void gal_hello(widget_t *b, int code)
 {
     widget_t *f = b->win->user;
@@ -362,6 +378,10 @@ void app_gallery(const char *arg)
     ui_radio(w, 140, 100, 60, "Th&ree", 1, false);
     ui_label(w, 12, 140, 60, 14, "&Speed:");
     ui_slider(w, 60, 134, 140, 1, 10, 5);
+    ui_label(w, 12, 176, 60, 14, "Si&ze:");
+    widget_t *dd = ui_dropdown(w, 60, 172, 140, size_get);
+    ui_dropdown_set_count(dd, 4);
+    ui_dropdown_select(dd, 1);
     ui_label(w, 216, 40, 100, 14, "&Fruit:");
     widget_t *lv = ui_listview(w, 216, 56, 192, 160, fruit_get);
     ui_listview_set_count(lv, 20);

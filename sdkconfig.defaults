@@ -1,54 +1,47 @@
-CONFIG_IDF_TARGET="esp32s3"
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# Bevel OS builds for two boards. Settings the two have in common are here; board-specific ones
+# live in sdkconfig.defaults.esp32s3 (ESP32-S3 devkit, resistor DAC into a VGA monitor) and
+# sdkconfig.defaults.esp32p4 (Guition JC1060P470-V2, 7" MIPI-DSI panel).
+#
+# Choose the board with:   idf.py set-target esp32s3      or      idf.py set-target esp32p4
+# The sdkconfig file follows whichever target was set last; the defaults files above fully
+# determine it, so deleting sdkconfig and configuring again gives a clean board configuration.
+
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
-# PSRAM: 8 MB octal (N16R8)
+# Both boards have PSRAM (8 MB octal on the S3, 32 MB on the P4); speed and mode are per board.
 CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
-# skip the 8 MB memory test at boot (saves ~1 s)
+# skip the memory test at boot (saves about a second)
 CONFIG_SPIRAM_MEMTEST=n
-
-# Bigger data cache helps PSRAM -> bounce buffer throughput
-CONFIG_ESP32S3_DATA_CACHE_64KB=y
-CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
-
-CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
-CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
 
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_FREERTOS_HZ=1000
-CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
-CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 
-# The JetKVM's composite HID device has a large configuration descriptor
+# USB host: keyboard and mouse, through a hub or splitter. Composite keyboards have a large
+# configuration descriptor, and some hubs do not answer the first request without patient timing.
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
 CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048
+CONFIG_USB_HOST_DEBOUNCE_DELAY_MS=500
+CONFIG_USB_HOST_RESET_HOLD_MS=60
+CONFIG_USB_HOST_RESET_RECOVERY_MS=120
+CONFIG_USB_HOST_SET_ADDR_RECOVERY_MS=30
 
-# Storage: 12 MB FAT drive in the internal flash (no SD card in this project)
+# The drive: a wear-levelled FAT filesystem in the internal flash (partition table per board)
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=64
 CONFIG_WL_SECTOR_SIZE_4096=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 
-# USB hubs (splitters): keyboard and mouse as two devices on the one host port
-CONFIG_USB_HOST_HUBS_SUPPORTED=y
-
-# Wi-Fi and HTTPS for the browser: keep their buffers out of the scarce internal RAM
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Network and HTTPS for the browser: keep their buffers out of the scarce internal RAM
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
-CONFIG_ESP_WIFI_IRAM_OPT=n
-CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 
-# Slower, more tolerant USB bus reset timing: some hubs do not answer the first request otherwise
-CONFIG_USB_HOST_DEBOUNCE_DELAY_MS=500
-CONFIG_USB_HOST_RESET_HOLD_MS=60
-CONFIG_USB_HOST_RESET_RECOVERY_MS=120
-CONFIG_USB_HOST_SET_ADDR_RECOVERY_MS=30
-CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+# JPEG in the picture viewer: shrinking while decoding (the S3 turns its ROM decoder off for this),
+# the faster Huffman tables, and a read buffer that suits files on FAT
+CONFIG_JD_SZBUF=4096
+CONFIG_JD_FASTDECODE_TABLE=y

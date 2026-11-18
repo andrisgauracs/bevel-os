@@ -1,3 +1,4 @@
+# ESP32-S3 board: 12 MB FAT drive in the 16 MB flash, no card reader.
 # Name,   Type, SubType, Offset,   Size
 nvs,      data, nvs,     0x9000,   0x6000
 phy_init, data, phy,     0xf000,   0x1000

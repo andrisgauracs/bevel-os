@@ -1,9 +1,10 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 # Fetch what Doom needs:
 #  - the doomgeneric engine source (GPL-2). A copy is already in third_party/doomgeneric
 #    (upstream commit e257a09); it is cloned only if that folder is missing.
 #  - the shareware DOOM1.WAD v1.9 (not kept in this repository), copied to the drive with:
-#      tools/bv.py put third_party/wad/doom1.wad /disk/Apps/doom1.wad
+#      python tools/bv.py put third_party/wad/doom1.wad /disk/Apps/doom1.wad
+#    (or copy it to the root of the SD card with a computer)
 cd "$(dirname "$0")/.."
 mkdir -p third_party/wad
 [ -d third_party/doomgeneric ] || git clone --depth 1 https://github.com/ozkl/doomgeneric.git third_party/doomgeneric

@@ -35,6 +35,32 @@ const char *fs_basename(const char *path)
 bool fs_exists(const char *path) { struct stat st; return stat(path, &st) == 0; }
 bool fs_is_dir(const char *path) { struct stat st; return stat(path, &st) == 0 && S_ISDIR(st.st_mode); }
 
+bool fs_exists_exact(const char *path)
+{
+    int rl = strlen(DISK_ROOT);
+    if (strncmp(path, DISK_ROOT, rl) || (path[rl] && path[rl] != '/')) return fs_exists(path);
+    char dir[300];
+    strlcpy(dir, DISK_ROOT, sizeof(dir));
+    const char *p = path + rl;
+    while (*p == '/') p++;
+    while (*p) {
+        const char *e = strchr(p, '/');
+        int n = e ? (int)(e - p) : (int)strlen(p);
+        DIR *d = opendir(dir);
+        if (!d) return false;
+        bool found = false;
+        for (struct dirent *de; !found && (de = readdir(d)) != NULL;)
+            found = (int)strlen(de->d_name) == n && !strncmp(de->d_name, p, n);
+        closedir(d);
+        if (!found) return false;
+        int dl = strlen(dir);
+        snprintf(dir + dl, sizeof(dir) - dl, "/%.*s", n, p);
+        p += n;
+        while (*p == '/') p++;
+    }
+    return true;
+}
+
 static int ent_cmp(const void *a, const void *b)
 {
     const fs_entry_t *x = a, *y = b;
@@ -52,6 +78,9 @@ int fs_list(const char *dir, fs_entry_t **out)
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        // the folders a card or stick is mounted on only show while one is there
+        if (!storage_sd_ok() && !strcmp(dir, DISK_ROOT) && !strcmp(de->d_name, "SD")) continue;
+        if (!storage_usb_ok() && !strcmp(dir, DISK_ROOT) && !strcmp(de->d_name, "USB")) continue;
         if (n == cap) {
             cap = cap ? cap * 2 : 32;
             fs_entry_t *nl = os_grow(list, n * sizeof(fs_entry_t), cap * sizeof(fs_entry_t));
@@ -77,6 +106,7 @@ int fs_list(const char *dir, fs_entry_t **out)
 
 bool fs_delete(const char *path)
 {
+    if (storage_is_mount_point(path)) return false;     // it would empty the whole card or stick
     if (fs_is_dir(path)) {
         fs_entry_t *list;
         int n = fs_list(path, &list);
@@ -169,7 +199,8 @@ const char *fs_type_name(const fs_entry_t *e)
     const char *x = fs_ext(e->name);
     if (ext_in(x, "txt md log ini cfg csv")) return "Text";
     if (ext_in(x, "c h py sh json")) return "Source text";
-    if (ext_in(x, "bmp")) return "Picture";
+    if (ext_in(x, "bmp jpg jpeg png")) return "Picture";
+    if (ext_in(x, "wav")) return "Sound";
     if (ext_in(x, "elf app")) return "Program";
     return "File";
 }
@@ -179,7 +210,7 @@ const bitmap_t *fs_type_icon(const fs_entry_t *e)
     if (e->is_dir) return &icon16_folder;
     const char *x = fs_ext(e->name);
     if (ext_in(x, "txt md log ini cfg csv c h py sh json")) return &icon16_text;
-    if (ext_in(x, "bmp")) return &icon16_image;
+    if (ext_in(x, "bmp jpg jpeg png")) return &icon16_image;
     if (ext_in(x, "elf app")) return strcasestr(e->name, "game") || strcasestr(e->name, "snake") || strcasestr(e->name, "blocks") ? &icon16_game : &icon16_app;
     return &icon16_file;
 }
@@ -187,17 +218,158 @@ const bitmap_t *fs_type_icon(const fs_entry_t *e)
 void os_open_file(window_t *owner, const char *path)
 {
     const char *x = fs_ext(path);
-    if (ext_in(x, "bmp")) app_viewer(path);
+    if (ext_in(x, "bmp jpg jpeg png")) app_viewer(path);
+#if BOARD_HAS_AUDIO
+    else if (ext_in(x, "wav")) app_player(path);
+#endif
     else if (ext_in(x, "elf app")) os_run_elf(path);
     else if (ext_in(x, "txt md log ini cfg csv c h py sh json")) app_editor(path);
     else if (msgbox(owner, "Open", "Bevel OS does not know this kind of file.\nOpen it in the text editor?", MB_ASK, MB_YESNO) == ID_YES) app_editor(path);
+}
+
+// ================================================================ path bar
+
+// The folder as a row of small buttons, "Drive > Music > Live": a click on one goes to that folder.
+// Shared by the file browser and the open/save dialog; the canvas's user field points at a crumbs_t.
+#define CRUMB_MAX 16
+#define CRUMB_SEP 12
+typedef struct {
+    const char *dir;                                    // the owner's current folder
+    void (*go)(window_t *w, const char *dir);           // navigate there
+    int press;                                          // segment held down, -1 none
+    bool over;
+} crumbs_t;
+
+typedef struct { int n, first; int end[CRUMB_MAX], x[CRUMB_MAX], w[CRUMB_MAX]; bool dots; } crumb_layout_t;
+
+static const char *crumb_label(const char *dir, const crumb_layout_t *l, int i, int *len)
+{
+    if (i == 0) { *len = 5; return "Drive"; }
+    const char *s = dir + l->end[i - 1] + 1;
+    *len = dir + l->end[i] - s;
+    return s;
+}
+
+static void crumb_layout(const crumbs_t *c, int width, crumb_layout_t *l)
+{
+    const char *dir = c->dir;
+    int rl = strlen(DISK_ROOT), len = strlen(dir);
+    l->n = 0;
+    l->end[l->n++] = rl;                                // "Drive" is DISK_ROOT itself
+    for (int i = rl + 1; i <= len && l->n < CRUMB_MAX; i++) if (i == len || dir[i] == '/') l->end[l->n++] = i;
+    int total = 0;
+    for (int i = 0; i < l->n; i++) {
+        int tl;
+        const char *t = crumb_label(dir, l, i, &tl);
+        l->w[i] = gfx_text_w(t, tl, FONT_UI) + 12;
+        total += l->w[i] + (i ? CRUMB_SEP : 0);
+    }
+    // too long for the bar: leave out folders from the left, behind "..."
+    int dots_w = gfx_text_w("...", -1, FONT_UI) + 4 + CRUMB_SEP;
+    l->first = 0;
+    l->dots = false;
+    while (total > width && l->first < l->n - 1) {
+        total -= l->w[l->first] + CRUMB_SEP;
+        if (!l->dots) { l->dots = true; total += dots_w; }
+        l->first++;
+    }
+    int x = l->dots ? dots_w : 0;
+    for (int i = l->first; i < l->n; i++) { l->x[i] = x; x += l->w[i] + CRUMB_SEP; }
+}
+
+static const uint16_t g_crumb_arrow[7] = {0x8000, 0xC000, 0xE000, 0xF000, 0xE000, 0xC000, 0x8000};
+
+static void crumbs_paint(widget_t *w, gfx_t *g)
+{
+    crumbs_t *c = w->user;
+    crumb_layout_t l;
+    crumb_layout(c, w->r.w, &l);
+    gfx_fill(g, 0, 0, w->r.w, w->r.h, C_FACE);
+    int ty = (w->r.h - FONT_UI_H) / 2;
+    if (l.dots) {
+        gfx_text(g, 2, ty, "...", -1, FONT_UI, C_TEXT);
+        gfx_glyph16(g, l.x[l.first] - CRUMB_SEP + 4, (w->r.h - 7) / 2, g_crumb_arrow, 4, 7, C_TEXT);
+    }
+    for (int i = l.first; i < l.n; i++) {
+        int tl;
+        const char *t = crumb_label(c->dir, &l, i, &tl);
+        bool last = i == l.n - 1, down = c->press == i && c->over;
+        // every folder above this one is a button; the folder you are in is plain text
+        if (down) ui_draw_pressed(g, l.x[i], 0, l.w[i], w->r.h);
+        else if (!last) gfx_bevel(g, l.x[i], 0, l.w[i], w->r.h, C_HILIGHT, C_SHADOW);
+        gfx_text(g, l.x[i] + 6 + (down ? 1 : 0), ty + (down ? 1 : 0), t, tl, FONT_UI, C_TEXT);
+        if (!last) gfx_glyph16(g, l.x[i] + l.w[i] + 4, (w->r.h - 7) / 2, g_crumb_arrow, 4, 7, C_SHADOW);
+    }
+}
+
+static void crumbs_mouse(widget_t *w, int type, int x, int y, int btn, int clicks)
+{
+    crumbs_t *c = w->user;
+    crumb_layout_t l;
+    crumb_layout(c, w->r.w, &l);
+    int hit = -1;
+    if (y >= 0 && y < w->r.h)
+        for (int i = l.first; i < l.n - 1; i++) if (x >= l.x[i] && x < l.x[i] + l.w[i]) hit = i;
+    if (type == EV_MOUSE_DOWN && btn == BTN_LEFT) {
+        c->press = hit; c->over = hit >= 0;
+        ui_invalidate(w);
+    } else if (type == EV_MOUSE_MOVE && c->press >= 0) {
+        bool over = hit == c->press;
+        if (over != c->over) { c->over = over; ui_invalidate(w); }
+    } else if (type == EV_MOUSE_UP && c->press >= 0) {
+        int p = c->press;
+        bool go = c->over;
+        c->press = -1; c->over = false;
+        ui_invalidate(w);
+        if (go && p < l.n - 1) {
+            char dir[256];
+            int n = l.end[p] < (int)sizeof(dir) - 1 ? l.end[p] : (int)sizeof(dir) - 1;
+            memcpy(dir, c->dir, n);
+            dir[n] = 0;
+            c->go(w->win, dir);
+        }
+    }
+}
+
+static const canvas_ops_t crumbs_ops = {crumbs_paint, NULL, crumbs_mouse};
+
+static widget_t *crumbs_new(window_t *win, int x, int y, int w, crumbs_t *c, const char *dir, void (*go)(window_t *, const char *))
+{
+    c->dir = dir; c->go = go; c->press = -1; c->over = false;
+    widget_t *wd = ui_canvas(win, x, y, w, 20, &crumbs_ops, false);
+    if (wd) wd->user = c;
+    return wd;
+}
+
+// A small icon button beside the path (up one folder, refresh): no tab stop, so a click leaves the
+// keyboard on the list.
+static widget_t *tool_button(window_t *win, int x, int y, const bitmap_t *icon, void (*on_click)(widget_t *, int))
+{
+    widget_t *b = ui_button(win, x, y, 24, 20, "", on_click);
+    ui_button_icon(b, icon);
+    b->flags &= ~WF_TABSTOP;
+    return b;
+}
+
+// When going from dir 'from' up to 'to', the folder to select in 'to' is the one 'from' was inside.
+static const char *child_on_way(const char *from, const char *to, char *buf, int n)
+{
+    int tl = strlen(to);
+    if (strncmp(from, to, tl) || from[tl] != '/') return NULL;
+    const char *s = from + tl + 1, *e = strchr(s, '/');
+    int len = e ? (int)(e - s) : (int)strlen(s);
+    if (len >= n) len = n - 1;
+    memcpy(buf, s, len);
+    buf[len] = 0;
+    return buf;
 }
 
 // ================================================================ file browser
 
 typedef struct {
     window_t *win;
-    widget_t *list, *path_lbl, *status;
+    widget_t *list, *path, *up, *refresh, *eject, *status;
+    crumbs_t crumbs;
     char dir[256];
     fs_entry_t *ents;
     int n;
@@ -206,18 +378,31 @@ typedef struct {
 static char s_fclip[300];
 static bool s_fclip_cut;
 
-enum { FC_OPEN = 1, FC_NEW_FOLDER, FC_NEW_FILE, FC_RENAME, FC_DELETE, FC_CLOSE, FC_CUT, FC_COPY, FC_PASTE, FC_REFRESH, FC_UP, FC_NEW_WINDOW };
+enum { FC_OPEN = 1, FC_NEW_FOLDER, FC_NEW_FILE, FC_RENAME, FC_DELETE, FC_CLOSE, FC_CUT, FC_COPY, FC_PASTE, FC_REFRESH, FC_UP, FC_NEW_WINDOW, FC_EJECT };
+
+// The row above the list: the Eject button only takes room while the folder is on a card or stick.
+static void files_layout_bar(files_t *f)
+{
+    int cw = wm_client_w(f->win);
+    bool eject = storage_volume_of(f->dir) != NULL;
+    ui_show(f->eject, eject);
+    ui_set_rect(f->eject, cw - 80, 3, 48, 20);
+    ui_set_rect(f->path, 32, 3, cw - (eject ? 116 : 64), 20);
+    ui_set_rect(f->refresh, cw - 28, 3, 24, 20);
+}
 
 static void files_get(widget_t *lv, int i, lv_item_t *it)
 {
     files_t *f = lv->win->user;
     static char size[24];
     fs_entry_t *e = &f->ents[i];
+    bool top = e->is_dir && !strcmp(f->dir, DISK_ROOT);
+    const char *volume = top && !strcmp(e->name, "SD") ? "SD card" : top && !strcmp(e->name, "USB") ? "USB stick" : NULL;
     it->text = e->name;
-    it->icon = fs_type_icon(e);
+    it->icon = volume ? &icon16_drive : fs_type_icon(e);
     if (e->is_dir) size[0] = 0; else os_fmt_size(size, sizeof(size), e->size);
     it->col[0] = size;
-    it->col[1] = fs_type_name(e);
+    it->col[1] = volume ? volume : fs_type_name(e);
 }
 
 static void files_load(files_t *f, const char *select)
@@ -233,14 +418,15 @@ static void files_load(files_t *f, const char *select)
     int sel = f->n ? 0 : -1;
     if (select) for (int i = 0; i < f->n; i++) if (!strcasecmp(f->ents[i].name, select)) sel = i;
     ui_listview_select(f->list, sel);
+    ui_invalidate(f->path);
+    ui_enable(f->up, strcmp(f->dir, DISK_ROOT) != 0);
+    files_layout_bar(f);
     char title[300];
-    snprintf(title, sizeof(title), "%s", strlen(f->dir) > strlen(DISK_ROOT) ? f->dir + strlen(DISK_ROOT) : "/");
-    ui_set_text(f->path_lbl, title);
     snprintf(title, sizeof(title), "Files - %s", strcmp(f->dir, DISK_ROOT) ? fs_basename(f->dir) : "Drive");
     wm_set_title(f->win, title);
     uint64_t total = 0, fr = 0;
     char a[20] = "?", b[20] = "?", st[96];
-    if (storage_df(&total, &fr)) { os_fmt_size(a, sizeof(a), fr); os_fmt_size(b, sizeof(b), total); }
+    if (storage_df_path(f->dir, &total, &fr)) { os_fmt_size(a, sizeof(a), fr); os_fmt_size(b, sizeof(b), total); }
     snprintf(st, sizeof(st), "%d item%s      %s free of %s", f->n, f->n == 1 ? "" : "s", a, b);
     ui_set_text(f->status, st);
 }
@@ -251,14 +437,29 @@ static fs_entry_t *files_sel(files_t *f)
     return (i >= 0 && i < f->n) ? &f->ents[i] : NULL;
 }
 
+// Go to a folder above this one, with the folder we came out of selected.
+static void files_go(window_t *w, const char *dir)
+{
+    files_t *f = w->user;
+    char was[68];
+    const char *sel = child_on_way(f->dir, dir, was, sizeof(was));
+    strlcpy(f->dir, dir, sizeof(f->dir));
+    files_load(f, sel);
+}
+
 static void files_up(files_t *f)
 {
     if (!strcmp(f->dir, DISK_ROOT)) return;
-    char was[68];
-    strlcpy(was, fs_basename(f->dir), sizeof(was));
-    *strrchr(f->dir, '/') = 0;
-    files_load(f, was);
+    char up[256];
+    strlcpy(up, f->dir, sizeof(up));
+    *strrchr(up, '/') = 0;
+    files_go(f->win, up);
 }
+
+static void files_up_click(widget_t *b, int code) { files_up(b->win->user); }
+static void files_command(window_t *w, int cmd);
+static void files_refresh_click(widget_t *b, int code) { files_command(b->win, FC_REFRESH); }
+static void files_eject_click(widget_t *b, int code) { files_command(b->win, FC_EJECT); }
 
 static void files_open(files_t *f)
 {
@@ -361,11 +562,55 @@ static void files_paste(files_t *f)
     }
     wm_busy(true);
     bool ok;
-    if (s_fclip_cut) { ok = rename(s_fclip, dst) == 0; if (ok) s_fclip[0] = 0; }
+    if (s_fclip_cut) {
+        ok = rename(s_fclip, dst) == 0;
+        if (!ok) ok = fs_copy(s_fclip, dst) && fs_delete(s_fclip);   // between the drive and the SD card
+        if (ok) s_fclip[0] = 0;
+    }
     else ok = fs_copy(s_fclip, dst);
     wm_busy(false);
     if (!ok) msgbox(f->win, "Paste", "Could not finish. The drive may be full.", MB_ERROR, MB_OK);
     files_load(f, name);
+}
+
+// A card or stick came or went: every open Files window lists its folder again. The empty folder it
+// was mounted on still exists on the drive, so a window that was inside it has to be moved out.
+void files_refresh_all(void)
+{
+    for (window_t *w = wm_top(); w; w = w->prev) {
+        if (w->on_command != files_command || (w->flags & WIN_DEAD)) continue;
+        files_t *f = w->user;
+        fs_entry_t *e = files_sel(f);
+        char keep[68] = "";
+        if (e) strlcpy(keep, e->name, sizeof(keep));
+        if (storage_path_gone(f->dir) || !fs_is_dir(f->dir)) strcpy(f->dir, DISK_ROOT);
+        files_load(f, keep);
+    }
+}
+
+// What Eject applies to: the card or stick this folder is on, or the one selected in the top folder.
+static const char *files_volume(files_t *f)
+{
+    const char *v = storage_volume_of(f->dir);
+    fs_entry_t *e = files_sel(f);
+    if (v || !e || !e->is_dir || strcmp(f->dir, DISK_ROOT)) return v;
+    char p[300];
+    fs_join(p, sizeof(p), f->dir, e->name);
+    return storage_is_mount_point(p) ? storage_volume_of(p) : NULL;
+}
+
+static void files_eject(files_t *f)
+{
+    const char *v = files_volume(f);
+    if (!v) return;
+    const char *what = strcmp(v, USB_ROOT) ? "SD card" : "USB stick";
+    char msg[80];
+    wm_busy(true);
+    bool ok = storage_eject(v);
+    wm_busy(false);
+    files_refresh_all();
+    snprintf(msg, sizeof(msg), ok ? "The %s can now be removed." : "The %s could not be ejected.", what);
+    msgbox(f->win, "Eject", msg, ok ? MB_INFO : MB_ERROR, MB_OK);
 }
 
 static void files_command(window_t *w, int cmd)
@@ -384,6 +629,7 @@ static void files_command(window_t *w, int cmd)
     case FC_REFRESH: { fs_entry_t *e = files_sel(f); char n[68] = ""; if (e) strlcpy(n, e->name, sizeof(n)); files_load(f, n); break; }
     case FC_UP: files_up(f); break;
     case FC_NEW_WINDOW: app_files(f->dir); break;
+    case FC_EJECT: files_eject(f); break;
     }
 }
 
@@ -395,6 +641,7 @@ static int files_menu_state(window_t *w, int cmd)
     case FC_OPEN: case FC_RENAME: case FC_DELETE: case FC_CUT: case FC_COPY: return has ? 0 : MI_DISABLED;
     case FC_PASTE: return s_fclip[0] ? 0 : MI_DISABLED;
     case FC_UP: return strcmp(f->dir, DISK_ROOT) ? 0 : MI_DISABLED;
+    case FC_EJECT: return files_volume(f) ? 0 : MI_DISABLED;
     }
     return 0;
 }
@@ -407,6 +654,7 @@ static const menu_item_t fm_file[] = {
     {"-", 0, NULL, NULL, 0},
     {"&Rename...\tF2", FC_RENAME, NULL, NULL, 0},
     {"&Delete\tDel", FC_DELETE, NULL, NULL, 0},
+    {"E&ject", FC_EJECT, NULL, NULL, 0},
     {"-", 0, NULL, NULL, 0},
     {"New &Window", FC_NEW_WINDOW, NULL, NULL, 0},
     {"&Close\tAlt+F4", FC_CLOSE, NULL, NULL, 0},
@@ -420,12 +668,12 @@ static const menu_item_t fm_edit[] = {
 };
 static const menu_item_t fm_go[] = {
     {"&Up one folder\tBackspace", FC_UP, NULL, &icon16_up, 0},
-    {"&Refresh\tF5", FC_REFRESH, NULL, NULL, 0},
+    {"&Refresh\tF5", FC_REFRESH, NULL, &icon16_refresh, 0},
     {NULL, 0, NULL, NULL, 0},
 };
 static const menu_item_t fm_bar[] = {{"&File", 0, fm_file, NULL, 0}, {"&Edit", 0, fm_edit, NULL, 0}, {"&Go", 0, fm_go, NULL, 0}, {NULL, 0, NULL, NULL, 0}};
 
-static menu_item_t s_ctx_items[10];
+static menu_item_t s_ctx_items[12];
 static void files_ctx_cb(void *ctx, int cmd)
 {
     window_t *w = ctx;
@@ -452,6 +700,10 @@ static void files_list_action(widget_t *lv, int code)
         }
         s_ctx_items[n++] = (menu_item_t){"-", 0, NULL, NULL, 0};
         s_ctx_items[n++] = (menu_item_t){"New &Folder...", FC_NEW_FOLDER, NULL, NULL, 0};
+        if (files_volume(f)) {
+            s_ctx_items[n++] = (menu_item_t){"-", 0, NULL, NULL, 0};
+            s_ctx_items[n++] = (menu_item_t){"E&ject", FC_EJECT, NULL, NULL, 0};
+        }
         s_ctx_items[n] = (menu_item_t){NULL, 0, NULL, NULL, 0};
         int x, y;
         ui_listview_context_pos(lv, &x, &y);
@@ -487,7 +739,7 @@ static void files_resize(window_t *w)
 {
     files_t *f = w->user;
     int cw = wm_client_w(w), ch = wm_client_h(w);
-    ui_set_rect(f->path_lbl, 30, 6, cw - 36, 14);
+    files_layout_bar(f);
     ui_set_rect(f->list, 4, 26, cw - 8, ch - 26 - 22);
     ui_set_rect(f->status, 8, ch - 17, cw - 16, 14);
 }
@@ -509,8 +761,11 @@ void app_files(const char *arg)
     f->win = w;
     wm_set_menubar(w, fm_bar);
     strlcpy(f->dir, (arg && fs_is_dir(arg)) ? arg : DISK_ROOT, sizeof(f->dir));
-    ui_icon(w, 8, 4, &icon16_folder);
-    f->path_lbl = ui_label(w, 30, 6, 400, 14, "/");
+    f->up = tool_button(w, 4, 3, &icon16_up, files_up_click);
+    f->path = crumbs_new(w, 32, 3, 376, &f->crumbs, f->dir, files_go);
+    f->refresh = tool_button(w, 412, 3, &icon16_refresh, files_refresh_click);
+    f->eject = ui_button(w, 360, 3, 48, 20, "Eject", files_eject_click);
+    f->eject->flags &= ~WF_TABSTOP;
     f->list = ui_listview(w, 4, 26, 432, 250, files_get);
     static const char *const titles[] = {"Name", "Size", "Type"};
     static const int widths[] = {230, 90, 90};
@@ -531,7 +786,8 @@ void app_files(const char *arg)
 
 typedef struct {
     window_t *win;
-    widget_t *list, *field, *where;
+    widget_t *list, *field, *path, *up;
+    crumbs_t crumbs;
     char dir[256];
     fs_entry_t *ents;
     int n;
@@ -550,27 +806,82 @@ static void fdlg_get(widget_t *lv, int i, lv_item_t *it)
     it->col[0] = size;
 }
 
-static void fdlg_load(fdlg_t *d)
+static fs_entry_t *fdlg_sel(fdlg_t *d)
+{
+    int i = ui_listview_sel(d->list);
+    return i >= 0 && i < d->n ? &d->ents[i] : NULL;
+}
+
+// Opening: the name box always shows the highlighted file (empty on a folder), so what Open
+// opens is what is highlighted. Saving: the name box keeps what was typed.
+static void fdlg_sync_name(fdlg_t *d)
+{
+    if (d->save) return;
+    fs_entry_t *e = fdlg_sel(d);
+    ui_textfield_set(d->field, e && !e->is_dir ? e->name : "");
+}
+
+static void fdlg_load(fdlg_t *d, const char *select)
 {
     free(d->ents);
+    d->ents = NULL;
     d->n = fs_list(d->dir, &d->ents);
     if (d->n < 0) d->n = 0;
     ui_listview_set_count(d->list, d->n);
-    ui_listview_select(d->list, d->n ? 0 : -1);
-    ui_set_text(d->where, strlen(d->dir) > strlen(DISK_ROOT) ? d->dir + strlen(DISK_ROOT) : "/");
+    int sel = d->n ? 0 : -1;
+    if (select) for (int i = 0; i < d->n; i++) if (!strcasecmp(d->ents[i].name, select)) sel = i;
+    ui_listview_select(d->list, sel);
+    ui_invalidate(d->path);
+    ui_enable(d->up, strcmp(d->dir, DISK_ROOT) != 0);
+    fdlg_sync_name(d);
+}
+
+static void fdlg_go(window_t *w, const char *dir)
+{
+    fdlg_t *d = w->user;
+    char was[68];
+    const char *sel = child_on_way(d->dir, dir, was, sizeof(was));
+    strlcpy(d->dir, dir, sizeof(d->dir));
+    fdlg_load(d, sel);
+}
+
+static void fdlg_up(fdlg_t *d)
+{
+    if (!strcmp(d->dir, DISK_ROOT)) return;
+    char up[256];
+    strlcpy(up, d->dir, sizeof(up));
+    *strrchr(up, '/') = 0;
+    fdlg_go(d->win, up);
+}
+
+static void fdlg_enter(fdlg_t *d, const char *name)
+{
+    char p[300];
+    fs_join(p, sizeof(p), d->dir, name);
+    strlcpy(d->dir, p, sizeof(d->dir));
+    fdlg_load(d, NULL);
+    ui_focus(d->list);
+}
+
+static void fdlg_choose(fdlg_t *d, const char *path)
+{
+    strlcpy(d->out, path, d->out_size);
+    wm_end_modal(d->win, ID_OK);
 }
 
 static void fdlg_accept(fdlg_t *d)
 {
-    char name[80], p[300];
+    char name[sizeof(d->ents[0].name)], p[300];
     strlcpy(name, ui_textfield_get(d->field), sizeof(name));
-    if (!name[0]) return;
-    if (!strcmp(name, "..")) {
-        if (strcmp(d->dir, DISK_ROOT)) { *strrchr(d->dir, '/') = 0; fdlg_load(d); }
-        ui_set_text(d->field, ""); return;
+    if (!name[0]) {
+        // nothing typed: Open acts on the highlighted item, a folder is entered
+        fs_entry_t *e = fdlg_sel(d);
+        if (e && e->is_dir) fdlg_enter(d, e->name);
+        return;
     }
+    if (!strcmp(name, "..")) { fdlg_up(d); return; }
     fs_join(p, sizeof(p), d->dir, name);
-    if (fs_is_dir(p)) { strlcpy(d->dir, p, sizeof(d->dir)); fdlg_load(d); ui_focus(d->list); return; }
+    if (fs_is_dir(p)) { fdlg_enter(d, name); return; }
     if (d->save) {
         if (!fs_valid_name(name)) { msgbox(d->win, "Save", "That name is not allowed.", MB_WARN, MB_OK); return; }
         if (!fs_ext(name)[0] && strlen(p) < sizeof(p) - 5) strcat(p, ".txt");
@@ -583,51 +894,43 @@ static void fdlg_accept(fdlg_t *d)
         msgbox(d->win, "Open", "There is no file with that name here.", MB_WARN, MB_OK);
         return;
     }
-    strlcpy(d->out, p, d->out_size);
-    wm_end_modal(d->win, ID_OK);
+    fdlg_choose(d, p);
 }
 
 static void fdlg_list_action(widget_t *lv, int code)
 {
     fdlg_t *d = lv->win->user;
-    int i = ui_listview_sel(lv);
-    if (i < 0 || i >= d->n) return;
-    if (code == UI_SELECT && !d->ents[i].is_dir) {
-        // show the highlighted file in the name box without stealing focus
-        ui_textfield_set(d->field, d->ents[i].name);
+    fs_entry_t *e = fdlg_sel(d);
+    if (!e) return;
+    if (code == UI_SELECT) {
+        // the highlighted file goes into the name box, without taking the focus
+        if (!e->is_dir) ui_textfield_set(d->field, e->name);
+        else fdlg_sync_name(d);
     } else if (code == UI_ACTIVATE) {
-        if (d->ents[i].is_dir) {
-            char p[300];
-            fs_join(p, sizeof(p), d->dir, d->ents[i].name);
-            strlcpy(d->dir, p, sizeof(d->dir));
-            fdlg_load(d);
-        } else {
-            char p[300];
-            fs_join(p, sizeof(p), d->dir, d->ents[i].name);
-            if (d->save) {
-                char msg[160];
-                snprintf(msg, sizeof(msg), "\"%s\" already exists. Replace it?", d->ents[i].name);
-                if (msgbox(d->win, "Save", msg, MB_ASK, MB_YESNO) != ID_YES) return;
-            }
-            strlcpy(d->out, p, d->out_size);
-            wm_end_modal(d->win, ID_OK);
+        if (e->is_dir) { fdlg_enter(d, e->name); return; }
+        char p[300];
+        fs_join(p, sizeof(p), d->dir, e->name);
+        if (d->save) {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "\"%s\" already exists. Replace it?", e->name);
+            if (msgbox(d->win, "Save", msg, MB_ASK, MB_YESNO) != ID_YES) return;
         }
+        fdlg_choose(d, p);
     }
 }
 
 static void fdlg_ok(widget_t *b, int code) { fdlg_accept(b->win->user); }
 static void fdlg_cancel(widget_t *b, int code) { wm_end_modal(b->win, ID_CANCEL); }
+static void fdlg_up_click(widget_t *b, int code) { fdlg_up(b->win->user); }
 
 static bool fdlg_key(window_t *w, const event_t *e)
 {
     fdlg_t *d = w->user;
-    if (e->key == K_BKSP && w->focus == d->list && !(e->mods & (MOD_CTRL | MOD_ALT))) {
-        if (strcmp(d->dir, DISK_ROOT)) { *strrchr(d->dir, '/') = 0; fdlg_load(d); }
-        return true;
-    }
+    if (e->key == K_BKSP && w->focus == d->list && !(e->mods & (MOD_CTRL | MOD_ALT))) { fdlg_up(d); return true; }
     return false;
 }
 
+// path: in = a file to start on, or a folder to start in; out = the chosen file
 bool file_dialog(window_t *owner, bool save, const char *title, char *path, int path_size)
 {
     fdlg_t d = {0};
@@ -636,27 +939,33 @@ bool file_dialog(window_t *owner, bool save, const char *title, char *path, int 
     w->user = &d;
     d.win = w; d.save = save; d.out = path; d.out_size = path_size;
     const char *name = "";
-    if (path[0]) {
+    if (path[0] && fs_is_dir(path)) {
+        strlcpy(d.dir, path, sizeof(d.dir));
+    } else if (path[0]) {
         strlcpy(d.dir, path, sizeof(d.dir));
         char *s = strrchr(d.dir, '/');
         if (s && s > d.dir) { *s = 0; name = fs_basename(path); }
     }
-    if (!d.dir[0] || !fs_is_dir(d.dir)) strcpy(d.dir, DISK_ROOT "/Documents");
+    int dl = strlen(d.dir);
+    while (dl > (int)strlen(DISK_ROOT) && d.dir[dl - 1] == '/') d.dir[--dl] = 0;
+    if (!d.dir[0] || !fs_is_dir(d.dir) || strncmp(d.dir, DISK_ROOT, strlen(DISK_ROOT))) strcpy(d.dir, DISK_ROOT "/Documents");
     if (!fs_is_dir(d.dir)) strcpy(d.dir, DISK_ROOT);
-    ui_label(w, 10, 10, 60, 14, save ? "Save in:" : "Look in:");
-    d.where = ui_label(w, 76, 10, 310, 14, "/");
-    d.list = ui_listview(w, 10, 28, 380, 186, fdlg_get);
+    ui_label(w, 10, 13, 56, 14, save ? "Save in:" : "Look in:");
+    d.up = tool_button(w, 66, 9, &icon16_up, fdlg_up_click);
+    d.path = crumbs_new(w, 94, 9, 296, &d.crumbs, d.dir, fdlg_go);
+    d.list = ui_listview(w, 10, 34, 380, 180, fdlg_get);
     static const char *const titles[] = {"Name", "Size"};
     static const int widths[] = {270, 90};
     ui_listview_columns(d.list, 2, titles, widths);
     d.list->on_action = fdlg_list_action;
     ui_label(w, 10, 225, 64, 14, "File &name:");
-    d.field = ui_textfield(w, 76, 222, 314, name, 60);
+    d.field = ui_textfield(w, 76, 222, 314, "", sizeof(d.ents[0].name) - 1);
     widget_t *ok = ui_button(w, 236, 250, 74, 24, save ? "Save" : "Open", fdlg_ok);
     widget_t *ca = ui_button(w, 316, 250, 74, 24, "Cancel", fdlg_cancel);
     w->def_btn = ok; w->cancel_btn = ca;
     w->on_key = fdlg_key;
-    fdlg_load(&d);
+    fdlg_load(&d, name[0] ? name : NULL);
+    if (save) ui_textfield_set(d.field, name);
     w->focus = save ? d.field : d.list;
     bool ok_res = wm_run_modal(w) == ID_OK;
     free(d.ents);

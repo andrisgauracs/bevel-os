@@ -1,4 +1,4 @@
-// 2D renderer. Hot paths live in IRAM and write whole words / 128-bit PIE vectors.
+// 2D renderer. Hot paths live in IRAM. The drawing primitives themselves are in gfx_draw.inc.
 #include <string.h>
 #include "gfx.h"
 #include "esp_attr.h"
@@ -27,6 +27,9 @@ void rect_union(rect_t *out, const rect_t *a, const rect_t *b)
 
 // ---------------------------------------------------------------- kernels
 
+#if HAS_PIE
+// 128-bit PIE moves: the VGA scan-out reads the framebuffer straight out of PSRAM, so filling it
+// fast enough is what decides whether the picture underruns (docs/PERF.md).
 void IRAM_ATTR k_copy(uint8_t *dst, const uint8_t *src, int n)
 {
     if (n >= 64 && (((uintptr_t)dst ^ (uintptr_t)src) & 15) == 0) {
@@ -52,10 +55,14 @@ void IRAM_ATTR k_fill(uint8_t *dst, uint8_t c, int n)
     while (n >= 4) { uint32_t v = c * 0x01010101u; memcpy(dst, &v, 4); dst += 4; n -= 4; }
     while (n-- > 0) *dst++ = c;
 }
+#else
+void IRAM_ATTR k_copy(uint8_t *dst, const uint8_t *src, int n) { memcpy(dst, src, n); }
+void IRAM_ATTR k_fill(uint8_t *dst, uint8_t c, int n) { memset(dst, c, n); }
+#endif
 
 // ---------------------------------------------------------------- context
 
-void gfx_init(gfx_t *g, uint8_t *px, int stride, int sx, int sy, int w, int h)
+void gfx_init(gfx_t *g, void *px, int stride, int sx, int sy, int w, int h)
 {
     g->px = px; g->stride = stride; g->sx = sx; g->sy = sy;
     g->cx0 = sx; g->cy0 = sy; g->cx1 = sx + w; g->cy1 = sy + h;
@@ -78,8 +85,6 @@ bool gfx_visible(const gfx_t *g, int x, int y, int w, int h)
     return x < g->cx1 && y < g->cy1 && x + w > g->cx0 && y + h > g->cy0;
 }
 
-#define ROWPTR(g, wx, wy) ((g)->px + ((wy) - (g)->sy) * (g)->stride + ((wx) - (g)->sx))
-
 // Clip a local rectangle to world coordinates. Returns false if empty.
 static inline bool clip_rect(const gfx_t *g, int *x, int *y, int *w, int *h)
 {
@@ -94,249 +99,81 @@ static inline bool clip_rect(const gfx_t *g, int *x, int *y, int *w, int *h)
     return true;
 }
 
-// ---------------------------------------------------------------- primitives
-
-void IRAM_ATTR gfx_fill(gfx_t *g, int x, int y, int w, int h, uint8_t c)
-{
-    if (!clip_rect(g, &x, &y, &w, &h)) return;
-    uint8_t *d = ROWPTR(g, x, y);
-    if (w >= 64) {
-        for (; h > 0; h--, d += g->stride) k_fill(d, c, w);
-    } else {
-        for (; h > 0; h--, d += g->stride) memset(d, c, w);
-    }
-}
-
-void IRAM_ATTR gfx_hline(gfx_t *g, int x, int y, int w, uint8_t c)
-{
-    int h = 1;
-    if (!clip_rect(g, &x, &y, &w, &h)) return;
-    memset(ROWPTR(g, x, y), c, w);
-}
-
-void IRAM_ATTR gfx_vline(gfx_t *g, int x, int y, int h, uint8_t c)
-{
-    int w = 1;
-    if (!clip_rect(g, &x, &y, &w, &h)) return;
-    uint8_t *d = ROWPTR(g, x, y);
-    for (; h > 0; h--, d += g->stride) *d = c;
-}
-
-void gfx_frame(gfx_t *g, int x, int y, int w, int h, uint8_t c)
-{
-    if (w <= 0 || h <= 0) return;
-    gfx_hline(g, x, y, w, c);
-    gfx_hline(g, x, y + h - 1, w, c);
-    gfx_vline(g, x, y + 1, h - 2, c);
-    gfx_vline(g, x + w - 1, y + 1, h - 2, c);
-}
-
-void gfx_bevel(gfx_t *g, int x, int y, int w, int h, uint8_t tl, uint8_t br)
-{
-    if (w <= 0 || h <= 0) return;
-    gfx_hline(g, x, y, w - 1, tl);
-    gfx_vline(g, x, y + 1, h - 2, tl);
-    gfx_hline(g, x, y + h - 1, w, br);
-    gfx_vline(g, x + w - 1, y, h - 1, br);
-}
-
-void IRAM_ATTR gfx_pixel(gfx_t *g, int x, int y, uint8_t c)
-{
-    x += g->ox; y += g->oy;
-    if (x < g->cx0 || x >= g->cx1 || y < g->cy0 || y >= g->cy1) return;
-    *ROWPTR(g, x, y) = c;
-}
-
-void gfx_line(gfx_t *g, int x0, int y0, int x1, int y1, uint8_t c)
-{
-    int dx = x1 > x0 ? x1 - x0 : x0 - x1, sx = x0 < x1 ? 1 : -1;
-    int dy = y1 > y0 ? y0 - y1 : y1 - y0, sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-    for (;;) {
-        gfx_pixel(g, x0, y0, c);
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 >= dy) { err += dy; x0 += sx; }
-        if (e2 <= dx) { err += dx; y0 += sy; }
-    }
-}
-
-void IRAM_ATTR gfx_checker(gfx_t *g, int x, int y, int w, int h, uint8_t c0, uint8_t c1)
-{
-    if (!clip_rect(g, &x, &y, &w, &h)) return;
-    for (int j = 0; j < h; j++) {
-        uint8_t *d = ROWPTR(g, x, y + j);
-        int ph = (x + y + j) & 1;
-        for (int i = 0; i < w; i++) d[i] = ((i + ph) & 1) ? c1 : c0;
-    }
-}
-
-void gfx_dotted(gfx_t *g, int x, int y, int w, int h, uint8_t c)
-{
-    for (int i = 0; i < w; i++) {
-        if (((x + i + y) & 1) == 0) gfx_pixel(g, x + i, y, c);
-        if (((x + i + y + h - 1) & 1) == 0) gfx_pixel(g, x + i, y + h - 1, c);
-    }
-    for (int j = 1; j < h - 1; j++) {
-        if (((x + y + j) & 1) == 0) gfx_pixel(g, x, y + j, c);
-        if (((x + w - 1 + y + j) & 1) == 0) gfx_pixel(g, x + w - 1, y + j, c);
-    }
-}
-
-void IRAM_ATTR gfx_bitmap(gfx_t *g, int x, int y, const bitmap_t *b)
-{
-    int w = b->w, h = b->h;
-    int lx = x + g->ox, ly = y + g->oy;
-    if (!clip_rect(g, &x, &y, &w, &h)) return;
-    const uint8_t *s = b->px + (y - ly) * b->w + (x - lx);
-    uint8_t *d = ROWPTR(g, x, y);
-    for (; h > 0; h--, s += b->w, d += g->stride) {
-        for (int i = 0; i < w; i++) {
-            uint8_t p = s[i];
-            if (p != 0xFF) d[i] = p;
-        }
-    }
-}
-
-void gfx_bitmap_tint(gfx_t *g, int x, int y, const bitmap_t *b, uint8_t c)
-{
-    int w = b->w, h = b->h;
-    int lx = x + g->ox, ly = y + g->oy;
-    if (!clip_rect(g, &x, &y, &w, &h)) return;
-    const uint8_t *s = b->px + (y - ly) * b->w + (x - lx);
-    uint8_t *d = ROWPTR(g, x, y);
-    for (int j = 0; j < h; j++, s += b->w, d += g->stride) {
-        for (int i = 0; i < w; i++) {
-            uint8_t p = s[i];
-            if (p != 0xFF) d[i] = ((x + i + y + j) & 1) ? c : p;
-        }
-    }
-}
-
-void IRAM_ATTR gfx_blit(gfx_t *g, int x, int y, int w, int h, const uint8_t *src, int src_stride)
-{
-    int lx = x + g->ox, ly = y + g->oy;
-    if (!clip_rect(g, &x, &y, &w, &h)) return;
-    const uint8_t *s = src + (y - ly) * src_stride + (x - lx);
-    uint8_t *d = ROWPTR(g, x, y);
-    for (; h > 0; h--, s += src_stride, d += g->stride) k_copy(d, s, w);
-}
-
-// Draw one row of up to 16 pixels; bit 15 of 'bits' is the pixel at world x.
-static inline void IRAM_ATTR put_bits(const gfx_t *g, uint8_t *row, int x, uint32_t bits, uint8_t c)
-{
-    // mask off pixels outside the clip
-    if (x < g->cx0) {
-        int cut = g->cx0 - x;
-        if (cut >= 16) return;
-        bits &= 0xFFFFu >> cut;
-    }
-    if (x + 16 > g->cx1) {
-        int keep = g->cx1 - x;
-        if (keep <= 0) return;
-        bits &= ~(0xFFFFu >> keep);
-    }
-    uint8_t *d = row + (x - g->sx);
-    while (bits) {
-        int i = __builtin_clz(bits) - 16;
-        d[i] = c;
-        bits &= ~(0x8000u >> i);
-    }
-}
-
-void IRAM_ATTR gfx_glyph16(gfx_t *g, int x, int y, const uint16_t *rows, int w, int h, uint8_t c)
-{
-    x += g->ox; y += g->oy;
-    if (x >= g->cx1 || x + 16 <= g->cx0) return;
-    int j0 = y < g->cy0 ? g->cy0 - y : 0;
-    int j1 = y + h > g->cy1 ? g->cy1 - y : h;
-    (void)w;
-    for (int j = j0; j < j1; j++) {
-        uint32_t bits = rows[j];
-        if (bits) put_bits(g, g->px + (y + j - g->sy) * g->stride, x, bits, c);
-    }
-}
 
 // ---------------------------------------------------------------- text
 
 int gfx_font_h(int font) { return font == FONT_MONO ? 16 : FONT_UI_H; }
 
-static inline int glyph_index(char ch)
+// Text is UTF-8, and the fonts cover ASCII plus the accented letters the keyboard layouts
+// type. One glyph is one byte (ASCII) or two bytes (the accents), so text walks by glyphs:
+// gfx_glyph gives the row of the font tables to draw and how many bytes the glyph is, and
+// gfx_glyph_back how many bytes the glyph before a caret spans, so Backspace deletes a
+// whole accented letter and not half of it.
+int gfx_glyph(const char *s, int i, int len, int *bytes)
 {
-    unsigned c = (unsigned char)ch;
-    return (c < 32 || c > 126) ? '?' - 32 : (int)c - 32;
+    unsigned char c = (unsigned char)s[i];
+    int row;
+    if (c < 0x80) {
+        *bytes = 1;
+        row = font_glyph_index[c];
+    } else if ((c & 0xE0) == 0xC0 && i + 1 < len) {
+        unsigned cp = ((c & 0x1F) << 6) | ((unsigned char)s[i + 1] & 0x3F);
+        *bytes = 2;
+        row = cp <= 255 ? font_glyph_index[cp] : 0xFFFF;
+    } else {
+        *bytes = 1;
+        row = 0xFFFF;
+    }
+    return row == 0xFFFF ? font_glyph_index['?'] : row;
+}
+
+int gfx_glyphs(const char *s, int len)
+{
+    if (len < 0) len = strlen(s);
+    int n = 0;
+    for (int i = 0; i < len;) {
+        int b;
+        gfx_glyph(s, i, len, &b);
+        i += b;
+        n++;
+    }
+    return n;
+}
+
+int gfx_glyph_back(const char *s, int pos)
+{
+    if (pos >= 2 && (s[pos - 2] & 0xC0) == 0xC0) return 2;
+    return 1;
+}
+
+static inline int glyph_adv(int row, int font, bool bold)
+{
+    return (font == FONT_MONO ? 8 : font_ui_adv[row]) + (bold ? 1 : 0);
 }
 
 int IRAM_ATTR gfx_text_w(const char *s, int len, int font)
 {
     if (len < 0) len = strlen(s);
-    if (font == FONT_MONO) return len * 8;
+    bool bold = font == FONT_UI_BOLD;
     int w = 0;
-    for (int i = 0; i < len; i++) w += font_ui_adv[glyph_index(s[i])];
-    if (font == FONT_UI_BOLD) w += len;
-    return w;
-}
-
-int IRAM_ATTR gfx_text(gfx_t *g, int x, int y, const char *s, int len, int font, uint8_t fg)
-{
-    if (len < 0) len = strlen(s);
-    int wx = x + g->ox, wy = y + g->oy;
-    int h = gfx_font_h(font);
-    int start = wx;
-    if (wy >= g->cy1 || wy + h <= g->cy0) return gfx_text_w(s, len, font);
-    int j0 = wy < g->cy0 ? g->cy0 - wy : 0;
-    int j1 = wy + h > g->cy1 ? g->cy1 - wy : h;
-    uint8_t *row0 = g->px + (wy - g->sy) * g->stride;
-    if (font == FONT_MONO) {
-        for (int i = 0; i < len; i++, wx += 8) {
-            if (wx >= g->cx1) { wx += (len - i) * 8; break; }
-            if (wx + 8 <= g->cx0) continue;
-            const uint8_t *gl = font_mono[glyph_index(s[i])];
-            for (int j = j0; j < j1; j++) {
-                uint32_t bits = (uint32_t)gl[j] << 8;
-                if (bits) put_bits(g, row0 + j * g->stride, wx, bits, fg);
-            }
-        }
-    } else {
-        bool bold = font == FONT_UI_BOLD;
-        for (int i = 0; i < len; i++) {
-            int gi = glyph_index(s[i]);
-            int adv = font_ui_adv[gi] + (bold ? 1 : 0);
-            if (wx < g->cx1 && wx + 16 > g->cx0) {
-                const uint16_t *gl = font_ui_rows[gi];
-                for (int j = j0; j < j1; j++) {
-                    uint32_t bits = gl[j];
-                    if (bold) bits |= bits >> 1;
-                    if (bits) put_bits(g, row0 + j * g->stride, wx, bits, fg);
-                }
-            }
-            wx += adv;
-        }
+    for (int i = 0; i < len;) {
+        int n;
+        w += glyph_adv(gfx_glyph(s, i, len, &n), font, bold);
+        i += n;
     }
-    return wx - start;
+    return w;
 }
 
 int gfx_label_w(const char *s, int font)
 {
-    int w = 0;
-    for (; *s; s++) {
-        if (*s == '&') { s++; if (!*s) break; }
-        w += gfx_text_w(s, 1, font);
+    int len = strlen(s), w = 0;
+    for (int i = 0; i < len;) {
+        if (s[i] == '&') { i++; if (i >= len) break; }
+        int n;
+        w += glyph_adv(gfx_glyph(s, i, len, &n), font, font == FONT_UI_BOLD);
+        i += n;
     }
     return w;
-}
-
-int gfx_label(gfx_t *g, int x, int y, const char *s, int font, uint8_t fg, bool underline)
-{
-    int x0 = x;
-    for (; *s; s++) {
-        bool mn = false;
-        if (*s == '&') { s++; if (!*s) break; mn = *s != '&'; }
-        int adv = gfx_text(g, x, y, s, 1, font, fg);
-        if (mn && underline) gfx_hline(g, x, y + (font == FONT_MONO ? 14 : FONT_UI_BASELINE + 2), adv - 1, fg);
-        x += adv;
-    }
-    return x - x0;
 }
 
 char gfx_label_mnemonic(const char *s)
@@ -350,3 +187,62 @@ char gfx_label_mnemonic(const char *s)
     }
     return 0;
 }
+
+// ---------------------------------------------------------------- primitives
+
+#if DISP_TRUE_COLOR
+static inline void IRAM_ATTR fill16(uint16_t *d, uint16_t c, int n)
+{
+    if ((c >> 8) == (c & 0xFF)) { memset(d, c & 0xFF, n * 2); return; }     // black, white
+    if (n >= 8) {
+        if ((uintptr_t)d & 2) { *d++ = c; n--; }
+        uint32_t v = c * 0x10001u, *p = (uint32_t *)d;
+        for (; n >= 16; n -= 16, p += 8) { p[0] = v; p[1] = v; p[2] = v; p[3] = v; p[4] = v; p[5] = v; p[6] = v; p[7] = v; }
+        for (; n >= 2; n -= 2) *p++ = v;
+        d = (uint16_t *)p;
+    }
+    while (n-- > 0) *d++ = c;
+}
+
+// the screen's own pixels
+#define PX uint16_t
+#define FN(name) name
+#define HOT IRAM_ATTR
+#define FROM8(p) disp_rgb222_lut[p]
+#define PX_FILL(d, c, n) fill16((d), (c), (n))
+#define PX_HLINE(d, c, n) fill16((d), (c), (n))
+#define PX_COPY(d, s, n) memcpy((d), (s), (size_t)(n) * 2)
+#include "gfx_draw.inc"
+#undef PX
+#undef FN
+#undef HOT
+#undef FROM8
+#undef PX_FILL
+#undef PX_HLINE
+#undef PX_COPY
+
+// A surface of palette bytes (a program's canvas) shown on the screen
+void IRAM_ATTR gfx_blit_rgb222(gfx_t *g, int x, int y, int w, int h, const uint8_t *src, int src_stride)
+{
+    int lx = x + g->ox, ly = y + g->oy;
+    if (!clip_rect(g, &x, &y, &w, &h)) return;
+    const uint8_t *s = src + (y - ly) * src_stride + (x - lx);
+    uint16_t *d = (uint16_t *)g->px + (y - g->sy) * g->stride + (x - g->sx);
+    const uint16_t *lut = disp_rgb222_lut;
+    for (; h > 0; h--, s += src_stride, d += g->stride)
+        for (int i = 0; i < w; i++) d[i] = lut[s[i]];
+}
+#define FN(name) name##8
+#define HOT
+#else
+#define FN(name) name
+#define HOT IRAM_ATTR
+#endif
+
+// palette bytes: every surface of the S3, and the canvases of loadable programs on the P4
+#define PX uint8_t
+#define FROM8(p) (p)
+#define PX_FILL(d, c, n) do { if ((n) >= 64) k_fill((d), (c), (n)); else memset((d), (c), (n)); } while (0)
+#define PX_HLINE(d, c, n) memset((d), (c), (n))
+#define PX_COPY(d, s, n) k_copy((d), (s), (n))
+#include "gfx_draw.inc"

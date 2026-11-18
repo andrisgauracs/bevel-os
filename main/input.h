@@ -11,12 +11,20 @@ enum {
     EV_MOUSE_UP,
     EV_WHEEL,        // x = delta
     EV_CALL,         // run fn(arg) in the GUI task
+    EV_PINCH,        // x, y = between the fingers, scale, button = PINCH_*
+    EV_TOUCH,        // one finger: x, y, button = TOUCH_* (window manager, which knows what is under it)
+    EV_TOUCH_SCROLL, // to a WF_TOUCH_SCROLL widget's mouse function: btn = pixels the finger moved down
 };
+
+// Two fingers on the touchscreen. scale is their distance against where the gesture began, 256 = same.
+enum { PINCH_BEGIN, PINCH_MOVE, PINCH_END };
+enum { TOUCH_TAP, TOUCH_LONG, TOUCH_DRAG_BEGIN, TOUCH_DRAG_MOVE, TOUCH_DRAG_END };
 
 #define MOD_CTRL  1
 #define MOD_SHIFT 2
 #define MOD_ALT   4
 #define MOD_GUI   8
+#define MOD_RALT  16   // the right Alt key: AltGr, which types layout characters, not shortcuts
 
 #define BTN_LEFT  1
 #define BTN_RIGHT 2
@@ -38,11 +46,13 @@ typedef struct {
     uint8_t type;
     uint8_t mods;
     uint8_t key;        // HID usage
-    char ch;            // printable ASCII for this key with the current modifiers, or 0
+    char ch;            // first byte of the text this key produces, or 0
+    char chs[6];        // the text the key produces: UTF-8 bytes (1-2 per glyph), empty string = none
     uint8_t down;
     uint8_t repeat;
     uint8_t button;
     int16_t x, y;
+    int16_t scale;      // EV_PINCH
     void (*fn)(void *);
     void *arg;
 } event_t;
@@ -58,6 +68,13 @@ void input_key(uint8_t usage, bool down);
 void input_kbd_report(uint8_t mod_bits, const uint8_t *keys, int nkeys); // boot-protocol style report
 void input_mouse_rel(int dx, int dy);
 void input_mouse_abs(int x, int y);               // screen pixels
+void input_touch(int x, int y, bool down);        // touchscreen: a finger is the left button
+void input_touch_right_click(int x, int y);       // touchscreen: a long touch
+void input_pinch(int x, int y, int scale, int phase); // touchscreen: two fingers (EV_PINCH)
+void input_touch_gesture(int phase, int x, int y); // touchscreen: one finger (EV_TOUCH)
+void input_touch_latest(int *x, int *y);          // where the finger is now, for TOUCH_DRAG_MOVE
+void input_touch_hide_pointer(void);
+bool input_touching(void);                        // the last pointer input came from the touchscreen
 void input_mouse_buttons(uint8_t mask);           // BTN_* bitmask, full state
 void input_wheel(int delta);
 void input_release_all(void);                     // device unplugged
@@ -67,6 +84,8 @@ void input_mouse_pos(int *x, int *y);
 uint8_t input_mods(void);
 uint8_t input_buttons(void);
 bool input_mouse_seen(void);                      // true once any mouse activity happened
+void input_pointer_frozen(bool frozen);           // drop pointer input (boot splash owns the screen)
+void input_pointer_busy(bool busy);               // show the pointer (the hourglass) even after touch hid it
 
 // Settings
 extern int input_mouse_speed;   // 1..10, 5 = 1:1
@@ -79,3 +98,6 @@ int input_repeat_poll(void);
 // US layout helpers
 char input_usage_to_char(uint8_t usage, uint8_t mods);
 bool input_char_to_usage(char c, uint8_t *usage, bool *shift);
+// the key that prints a code point in the current layout (state: bit0 Shift, bit1 AltGr)
+bool input_key_find(uint16_t code, uint8_t *usage, int *state);
+void input_key_text_test(uint8_t usage, uint8_t mods, char *out, int cap);  // layout check for the serial console

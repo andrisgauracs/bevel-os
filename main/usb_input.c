@@ -1,6 +1,7 @@
-// USB host HID input on the native USB pins (GPIO19/20, wired to a USB-C breakout).
-// Report descriptors are parsed, so keyboards, relative mice and absolute pointers (the
-// JetKVM's mouse reports absolute coordinates) all work, with or without report IDs.
+// USB host HID input on the board's host port: the ESP32-P4's high-speed USB 2.0 OTG controller and
+// the dock plugged into it, or the ESP32-S3's full-speed controller on GPIO19/20 behind a USB-C
+// breakout (docs/HANDOFF-AMENDMENT-USB.md). Report descriptors are parsed, so keyboards, relative
+// mice and absolute pointers (KVMs, tablets) all work, with or without report IDs.
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -10,10 +11,34 @@
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
 #include "input.h"
-#include "vga.h"
+#include "display.h"
 #include "os.h"
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "soc/usb_dwc_struct.h"
+#endif
 
 static const char *TAG = "usb";
+
+#if CONFIG_IDF_TARGET_ESP32P4
+// The host port is the ESP32-P4's high-speed controller, but ESP-IDF's host stack has no transaction
+// translator support: a keyboard or mouse (low/full speed) behind a high-speed hub is refused
+// ("Connected device is FS, transaction translator (TT) is not supported"). Keyboards and mice are
+// all this OS uses the port for, so the controller is told to run the port at full speed only
+// (HCFG.FSLSSupp: it then does not answer the high-speed chirp). Hubs come up as USB 1.1 hubs, and
+// everything behind them works. Set to 0 to get high speed back (devices straight on the port only).
+#define USB_FORCE_FULL_SPEED 1
+
+static inline void force_full_speed(void)
+{
+#if USB_FORCE_FULL_SPEED
+    // a port recovery resets the controller and with it this bit, so it is re-applied by the watchdog task
+    if (!USB_DWC_HS.hcfg_reg.fslssupp) USB_DWC_HS.hcfg_reg.fslssupp = 1;
+#endif
+}
+#else
+// The S3's controller only runs full speed, so there is nothing to force.
+static inline void force_full_speed(void) { }
+#endif
 
 enum { F_KEY_MODS, F_KEY_ARRAY, F_BUTTONS, F_X, F_Y, F_WHEEL };
 typedef struct {
@@ -41,6 +66,15 @@ static int s_kbd_count, s_mouse_count;
 
 int usb_keyboards(void) { return s_kbd_count; }
 int usb_mice(void) { return s_mouse_count; }
+
+// How many devices the USB host has mounted. A hub counts as one and its keyboard and mouse are not
+// visible yet, so this tells an empty port apart from a hub that is still working through what is
+// plugged into it. The boot splash uses that to decide whether to keep waiting.
+int usb_devices_mounted(void)
+{
+    usb_host_lib_info_t info = {0};
+    return usb_host_lib_info(&info) == ESP_OK ? (int)info.num_devices : 0;
+}
 
 // ---------------------------------------------------------------- report descriptor parser
 
@@ -190,13 +224,11 @@ static void handle_report(iface_t *it, const uint8_t *data, size_t len)
             else {
                 int32_t range = f->lmax - f->lmin;
                 if (range <= 0) break;
-                // An absolute pointer covers what the capture device sees. Our line is 640 active
-                // pixels out of 848; a capture expecting standard timing (active = 80% of the
-                // line) sees the picture centred in 678 pixel widths, 19 on each side.
-                int span = f->kind == F_X ? VGA_ABS_SPAN_X : VGA_H;
+                // An absolute pointer covers what its capture device sees of the picture; on the VGA
+                // board that is not the whole scan-out line (display.h: POINTER_SPAN_X).
+                int span = f->kind == F_X ? POINTER_SPAN_X : SCREEN_H;
                 int p = (int)(((int64_t)(v - f->lmin) * span) / (range + 1));
-                if (f->kind == F_X) p -= (VGA_ABS_SPAN_X - VGA_W) / 2;
-                if (f->kind == F_X) ax = p; else ay = p;
+                if (f->kind == F_X) ax = p - POINTER_OFFS_X; else ay = p;
                 have_abs = true;
             }
             break;
@@ -260,19 +292,26 @@ static void iface_cb(hid_host_device_handle_t h, const hid_host_interface_event_
     }
 }
 
+// Counts HID interfaces appearing and being opened: usb_storage.c waits for this to stop moving.
+static volatile int s_hid_activity;
+int usb_hid_activity(void) { return s_hid_activity; }
+
 static void driver_cb(hid_host_device_handle_t h, const hid_host_driver_event_t event, void *arg)
 {
     hid_evt_t e = {.handle = h, .event = event};
+    s_hid_activity++;
     xQueueSend(s_evt_queue, &e, 0);
 }
 
-static void open_device(hid_host_device_handle_t h)
+// False only if the interface could not be claimed, which in practice means no host channel was free.
+static bool open_device(hid_host_device_handle_t h)
 {
     iface_t *it = NULL;
     for (int i = 0; i < MAX_IFACES; i++) if (!s_if[i].used) { it = &s_if[i]; break; }
-    if (!it) { ESP_LOGW(TAG, "too many HID interfaces"); return; }
+    if (!it) { ESP_LOGW(TAG, "too many HID interfaces"); return true; }
     const hid_host_device_config_t cfg = {.callback = iface_cb, .callback_arg = NULL};
-    if (hid_host_device_open(h, &cfg) != ESP_OK) return;
+    if (hid_host_device_open(h, &cfg) != ESP_OK) return false;
+    s_hid_activity++;
     memset(it, 0, sizeof(*it));
     it->handle = h;
     size_t dlen = 0;
@@ -284,7 +323,7 @@ static void open_device(hid_host_device_handle_t h)
         // nothing we understand (vendor interface): leave it idle
         ESP_LOGI(TAG, "interface %d: no keyboard/mouse usages, ignored", p.iface_num);
         hid_host_device_close(h);
-        return;
+        return true;
     }
     it->used = true;
     recount();
@@ -293,12 +332,62 @@ static void open_device(hid_host_device_handle_t h)
     ESP_LOGI(TAG, "interface %d: %s%s%s, %d fields, report IDs %s", p.iface_num, it->is_kbd ? "keyboard " : "",
              it->is_mouse ? (abs ? "absolute pointer " : "mouse ") : "", "", it->nf, it->has_ids ? "yes" : "no");
     if (hid_host_device_start(h) != ESP_OK) { it->used = false; recount(); }
+    return true;
 }
+
+// An interface found no channel. Input outranks a USB stick, so the stick gives its channels back if
+// this looks like something needed: a boot keyboard or mouse, or anything at all while one of the two
+// is missing. A receiver's vendor interface, with both already working, is not worth a stick.
+static void open_device_or_evict(hid_host_device_handle_t h)
+{
+    if (open_device(h)) return;
+    hid_host_dev_params_t p;
+    if (hid_host_device_get_params(h, &p) != ESP_OK) return;
+    if (p.proto == HID_PROTOCOL_NONE && s_kbd_count && s_mouse_count) return;
+    if (usb_storage_eject()) {
+        ESP_LOGW(TAG, "USB stick unmounted: its host channels were needed for input");
+        open_device(h);
+    }
+}
+
+#if CONFIG_IDF_TARGET_ESP32S3
+#ifndef CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+#error "Stale sdkconfig: delete this build directory's sdkconfig so sdkconfig.defaults.esp32s3 applies"
+#endif
+// The S3's controller has 8 host channels and every open endpoint keeps one: each device takes one
+// for its control endpoint, a hub a second for its status endpoint, each keyboard or mouse interface
+// one more. A dock's hubs, Ethernet adapter and billboard device use them up before a receiver's mouse
+// gets its turn, so what this OS can never use is turned away, which gives its channel back.
+// Only the device descriptor is known at this point. Class 0 means "see the interfaces", which could
+// be anything, so those stay unless they are a network adapter recognised by their USB ID.
+static bool enum_filter(const usb_device_desc_t *d, uint8_t *config)
+{
+    (void)config;   // stays at the first configuration
+    switch (d->bDeviceClass) {
+    case USB_CLASS_HUB:
+    case USB_CLASS_HID:
+    case USB_CLASS_MASS_STORAGE:
+    case USB_CLASS_MISC:
+        return true;
+    case USB_CLASS_PER_INTERFACE:
+        if (d->idVendor == 0x0bda && (d->idProduct & 0xff00) == 0x8100) return false;   // Realtek network
+        if (d->idVendor == 0x0b95) return false;                                        // ASIX network
+        return true;
+    default:
+        return false;   // billboard, vendor-specific, and the rest
+    }
+}
+#define USB_ENUM_FILTER enum_filter
+#else
+#define USB_ENUM_FILTER NULL    // the P4's controller has channels to spare
+#endif
 
 static void usb_lib_task(void *arg)
 {
-    const usb_host_config_t cfg = {.skip_phy_setup = false, .intr_flags = ESP_INTR_FLAG_LEVEL1};
+    const usb_host_config_t cfg = {.skip_phy_setup = false, .intr_flags = ESP_INTR_FLAG_LEVEL1,
+                                   .enum_filter_cb = USB_ENUM_FILTER};
     ESP_ERROR_CHECK(usb_host_install(&cfg));
+    force_full_speed();     // before the first bus reset (the connection is debounced for 500 ms)
     xTaskNotifyGive((TaskHandle_t)arg);
     while (1) {
         uint32_t flags;
@@ -311,7 +400,7 @@ static void hid_task(void *arg)
 {
     hid_evt_t e;
     while (1) {
-        if (xQueueReceive(s_evt_queue, &e, portMAX_DELAY) && e.event == HID_HOST_DRIVER_EVENT_CONNECTED) open_device(e.handle);
+        if (xQueueReceive(s_evt_queue, &e, portMAX_DELAY) && e.event == HID_HOST_DRIVER_EVENT_CONNECTED) open_device_or_evict(e.handle);
     }
 }
 
@@ -321,16 +410,26 @@ static void hid_task(void *arg)
 // seconds, switch the root port off and on, which restarts connection detection.
 volatile int usb_force_cycle;
 volatile int usb_wd_off;
+volatile int usb_boot_wait;   // set while the boot splash is still waiting for a pointer (boot.c)
 
 static void port_watchdog_task(void *arg)
 {
     int idle_s = 0, period = 4;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        for (int i = 0; i < 10; i++) { vTaskDelay(pdMS_TO_TICKS(100)); force_full_speed(); }
         if (usb_wd_off) continue;
         // "Idle" = no working keyboard or mouse. That covers an empty port, a port stuck after a
         // failed reset, and a device or hub whose enumeration failed (it still counts as attached).
         if ((s_kbd_count + s_mouse_count) > 0 && !usb_force_cycle) { idle_s = 0; period = 4; continue; }
+        // Only an empty port is cycled: with a hub attached, switching the root port off trips an
+        // assertion in ESP-IDF's hub driver.
+        usb_host_lib_info_t info = {0};
+        if (usb_host_lib_info(&info) == ESP_OK && info.num_devices > 0) { idle_s = 0; usb_force_cycle = 0; continue; }
+        // While the boot splash is still holding the screen for a pointer, do not back off. A cold
+        // wireless receiver raises its connection event whenever it feels like, and if it missed the
+        // host's first look at the port the next chance is whatever this wait is: 4 s during boot,
+        // 8 and 12 s once the machine is running. Backing off is for a machine that is already up.
+        if (usb_boot_wait && period > 4) period = 4;
         if (++idle_s < period && !usb_force_cycle) continue;
         idle_s = 0;
         usb_force_cycle = 0;
@@ -341,11 +440,51 @@ static void port_watchdog_task(void *arg)
     }
 }
 
+// "usbdev" serial command: every device on the bus, with its interfaces.
+static void list_client_cb(const usb_host_client_event_msg_t *msg, void *arg) { }
+
+void usb_list_devices(void)
+{
+    usb_host_client_handle_t cl;
+    const usb_host_client_config_t ccfg = {.is_synchronous = false, .max_num_event_msg = 4,
+                                           .async = {.client_event_callback = list_client_cb}};
+    if (usb_host_client_register(&ccfg, &cl) != ESP_OK) { serial_printf("usb: no client\n"); return; }
+    uint8_t addrs[16];
+    int n = 0;
+    usb_host_device_addr_list_fill(sizeof(addrs), addrs, &n);
+    serial_printf("usb: %d device(s)\n", n);
+    for (int i = 0; i < n; i++) {
+        usb_device_handle_t dev;
+        if (usb_host_device_open(cl, addrs[i], &dev) != ESP_OK) { serial_printf("  addr %d: cannot open\n", addrs[i]); continue; }
+        usb_device_info_t info;
+        const usb_device_desc_t *dd;
+        const usb_config_desc_t *cd;
+        usb_host_device_info(dev, &info);
+        usb_host_get_device_descriptor(dev, &dd);
+        static const char *const speeds[] = {"low", "full", "high"};
+        serial_printf("  addr %d: %04x:%04x class %02x, %s speed, %d configuration(s)\n", addrs[i], dd->idVendor, dd->idProduct,
+                      dd->bDeviceClass, info.speed < 3 ? speeds[info.speed] : "?", dd->bNumConfigurations);
+        if (usb_host_get_active_config_descriptor(dev, &cd) == ESP_OK) {
+            int off = 0;
+            const usb_standard_desc_t *d = (const usb_standard_desc_t *)cd;
+            while ((d = usb_parse_next_descriptor_of_type(d, cd->wTotalLength, USB_B_DESCRIPTOR_TYPE_INTERFACE, &off)) != NULL) {
+                const usb_intf_desc_t *it = (const usb_intf_desc_t *)d;
+                serial_printf("    interface %d: class %02x subclass %02x protocol %02x\n", it->bInterfaceNumber, it->bInterfaceClass,
+                              it->bInterfaceSubClass, it->bInterfaceProtocol);
+            }
+        }
+        usb_host_device_close(cl, dev);
+    }
+    usb_host_client_deregister(cl);
+}
+
 void usb_input_start(void)
 {
     s_evt_queue = xQueueCreate(10, sizeof(hid_evt_t));
     xTaskCreatePinnedToCore(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), 10, NULL, SYS_CORE);
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+    extern void usb_storage_start(void);
+    usb_storage_start();    // before the first device is announced: clients only hear about new ones
     const hid_host_driver_config_t hcfg = {
         .create_background_task = true,
         .task_priority = 9,

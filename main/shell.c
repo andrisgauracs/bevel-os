@@ -1,16 +1,18 @@
 // The shell: desktop icons, taskbar, main menu, Alt+Tab switcher, global keys, shut-down dialog.
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <ctype.h>
 #include "wm.h"
 #include "comp.h"
 #include "os.h"
 #include "apps.h"
+#include "audio.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-uint8_t shell_desktop_color = C_TEAL;
+uint8_t shell_desktop_color = RGB222_8(0, 2, 2);   // a palette byte, as saved in the settings
 
 enum { SF_NONE, SF_DESKTOP, SF_TASKBAR };
 static int s_focus = SF_DESKTOP;
@@ -42,9 +44,27 @@ static int s_sw_n, s_sw_sel;
 
 static bool s_gui_clean;
 
+// ---- volume icon, left of the clock (only on a board with sound)
+#if BOARD_HAS_AUDIO
+#define VOL_W 22
+#define TRAY_W (VOL_W + 2)
+#define VOL_X (SCREEN_W - CLOCK_W - 3 - TRAY_W)
+#define VOL_STEP 5              // the same steps as the slider in Settings
+#define VP_W 48
+#define VP_H 150
+#define VP_X (SCREEN_W - VP_W - 2 < VOL_X + (VOL_W - VP_W) / 2 ? SCREEN_W - VP_W - 2 : VOL_X + (VOL_W - VP_W) / 2)
+#define VP_Y (DESK_H - VP_H - 2)
+#define VP_TRACK_Y (VP_Y + 28)
+#define VP_TRACK_H (VP_H - 42)
+static bool s_vol_open, s_vol_drag, s_vol_dirty;
+static int s_vol_from;          // the volume when the current drag began
+#else
+#define TRAY_W 0
+#endif
+
 bool shell_has_focus(void) { return s_focus != SF_NONE && !wm_active(); }
 
-static void inval_taskbar(void) { comp_invalidate(0, DESK_H, VGA_W, TASKBAR_H); }
+static void inval_taskbar(void) { comp_invalidate(0, DESK_H, SCREEN_W, TASKBAR_H); }
 
 static void desk_cell(int i, rect_t *r)
 {
@@ -116,7 +136,7 @@ void shell_windows_changed(void)
 
 static void task_btn_rect(int i, rect_t *r)
 {
-    int avail = VGA_W - TB_BTN_X - CLOCK_W - 8;
+    int avail = SCREEN_W - TB_BTN_X - CLOCK_W - 8 - TRAY_W;
     int bw = s_ntasks ? avail / s_ntasks : 0;
     if (bw > 150) bw = 150;
     *r = rect_make(TB_BTN_X + i * bw, DESK_H + 4, bw - 3, TASKBAR_H - 6);
@@ -126,7 +146,11 @@ static void task_btn_rect(int i, rect_t *r)
 
 void shell_paint_desktop(gfx_t *g, const rect_t *area)
 {
-    gfx_fill(g, 0, 0, VGA_W, DESK_H, shell_desktop_color);
+#if BOARD_HAS_WALLPAPER
+    wallpaper_paint(g, gfx_from8(shell_desktop_color));
+#else
+    gfx_fill(g, 0, 0, SCREEN_W, DESK_H, gfx_from8(shell_desktop_color));
+#endif
     for (int i = 0; i < s_desk_n; i++) {
         rect_t r;
         desk_cell(i, &r);
@@ -149,17 +173,26 @@ void shell_paint_desktop(gfx_t *g, const rect_t *area)
     }
 }
 
+// The time of day once the network - or, on a board with a clock chip, the chip - has supplied it;
+// the uptime since power-on until then.
 static void fmt_clock(char *buf, int n)
 {
+    if (clock_valid()) {
+        time_t now = time(NULL);
+        struct tm tm;
+        localtime_r(&now, &tm);
+        snprintf(buf, n, "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+        return;
+    }
     uint32_t s = os_uptime_ms() / 1000;
     snprintf(buf, n, "%u:%02u:%02u", (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
 }
 
 void shell_paint_taskbar(gfx_t *g, const rect_t *area)
 {
-    gfx_fill(g, 0, DESK_H, VGA_W, TASKBAR_H, C_FACE);
-    gfx_hline(g, 0, DESK_H, VGA_W, C_FACE);
-    gfx_hline(g, 0, DESK_H + 1, VGA_W, C_HILIGHT);
+    gfx_fill(g, 0, DESK_H, SCREEN_W, TASKBAR_H, C_FACE);
+    gfx_hline(g, 0, DESK_H, SCREEN_W, C_FACE);
+    gfx_hline(g, 0, DESK_H + 1, SCREEN_W, C_HILIGHT);
     bool tb_focus = s_focus == SF_TASKBAR && !wm_active() && !menu_is_open();
     // menu button
     int by = DESK_H + 4, bh = TASKBAR_H - 6;
@@ -188,19 +221,43 @@ void shell_paint_taskbar(gfx_t *g, const rect_t *area)
         gfx_restore(g, &st);
         if (tb_focus && s_tb_sel == i + 1) gfx_dotted(g, r.x + 3, r.y + 3, r.w - 6, r.h - 6, C_BLACK);
     }
-    // clock (uptime: there is no real-time clock on the board)
-    int cx = VGA_W - CLOCK_W - 3;
+#if BOARD_HAS_AUDIO
+    if (s_vol_open) ui_draw_pressed(g, VOL_X, by, VOL_W, bh);
+    gfx_bitmap(g, VOL_X + 3, by + 3, &icon16_sound);
+    if (audio_volume == 0) gfx_line(g, VOL_X + 4, by + 17, VOL_X + 17, by + 4, C_RED);
+#endif
+    // clock
+    int cx = SCREEN_W - CLOCK_W - 3;
     gfx_bevel(g, cx, by, CLOCK_W, bh, C_SHADOW, C_HILIGHT);
     char buf[16];
     fmt_clock(buf, sizeof(buf));
     gfx_text(g, cx + (CLOCK_W - gfx_text_w(buf, -1, FONT_UI)) / 2, by + 5, buf, -1, FONT_UI, C_TEXT);
 }
 
+#if BOARD_HAS_AUDIO
+static void volume_paint(gfx_t *g)
+{
+    char t[8];
+    gfx_fill(g, VP_X, VP_Y, VP_W, VP_H, C_FACE);
+    ui_draw_raised(g, VP_X, VP_Y, VP_W, VP_H);
+    snprintf(t, sizeof(t), "%d%%", audio_volume);
+    gfx_text(g, VP_X + (VP_W - gfx_text_w(t, -1, FONT_UI)) / 2, VP_Y + 9, t, -1, FONT_UI, C_TEXT);
+    int cx = VP_X + VP_W / 2;
+    ui_draw_sunken(g, cx - 2, VP_TRACK_Y, 4, VP_TRACK_H);
+    int ty = VP_TRACK_Y + VP_TRACK_H - audio_volume * VP_TRACK_H / 100;
+    gfx_fill(g, cx - 10, ty - 5, 20, 10, C_FACE);
+    ui_draw_raised(g, cx - 10, ty - 5, 20, 10);
+}
+#endif
+
 void shell_paint_overlay(gfx_t *g, const rect_t *area)
 {
+#if BOARD_HAS_AUDIO
+    if (s_vol_open) volume_paint(g);
+#endif
     if (!s_switching) return;
     int w = 300, h = 34 + s_sw_n * 22;
-    int x = (VGA_W - w) / 2, y = (DESK_H - h) / 2;
+    int x = (SCREEN_W - w) / 2, y = (DESK_H - h) / 2;
     gfx_fill(g, x, y, w, h, C_FACE);
     ui_draw_raised(g, x, y, w, h);
     gfx_text(g, x + 10, y + 8, "Switch to", -1, FONT_UI_BOLD, C_TEXT);
@@ -220,7 +277,7 @@ void shell_paint_overlay(gfx_t *g, const rect_t *area)
 static void inval_switcher(void)
 {
     int w = 300, h = 34 + s_sw_n * 22;
-    comp_invalidate((VGA_W - w) / 2, (DESK_H - h) / 2, w, h);
+    comp_invalidate((SCREEN_W - w) / 2, (DESK_H - h) / 2, w, h);
 }
 
 // ---------------------------------------------------------------- main menu
@@ -274,16 +331,17 @@ void shell_open_start_menu(void)
 
 static void halt_screen(void)
 {
-    uint8_t *fb = vga_fb();
+    pixel_t *fb = disp_fb();
     gfx_t g;
-    vga_cursor_show(false);
-    gfx_init(&g, fb, VGA_W, 0, 0, VGA_W, VGA_H);
-    gfx_fill(&g, 0, 0, VGA_W, VGA_H, C_BLACK);
+    disp_cursor_show(false);
+    gfx_init(&g, fb, SCREEN_W, 0, 0, SCREEN_W, SCREEN_H);
+    gfx_fill(&g, 0, 0, SCREEN_W, SCREEN_H, C_BLACK);
     const char *m1 = OS_NAME " has shut down.";
     const char *m2 = "It is safe to unplug it. Press any key to start again.";
-    gfx_bitmap(&g, (VGA_W - 32) / 2, 180, &icon32_logo);
-    gfx_text(&g, (VGA_W - gfx_text_w(m1, -1, FONT_UI_BOLD)) / 2, 226, m1, -1, FONT_UI_BOLD, C_ORANGE);
-    gfx_text(&g, (VGA_W - gfx_text_w(m2, -1, FONT_UI)) / 2, 246, m2, -1, FONT_UI, C_GREY);
+    gfx_bitmap(&g, (SCREEN_W - 32) / 2, SCREEN_H / 2 - 60, &icon32_logo);
+    gfx_text(&g, (SCREEN_W - gfx_text_w(m1, -1, FONT_UI_BOLD)) / 2, SCREEN_H / 2 - 14, m1, -1, FONT_UI_BOLD, C_ORANGE);
+    gfx_text(&g, (SCREEN_W - gfx_text_w(m2, -1, FONT_UI)) / 2, SCREEN_H / 2 + 6, m2, -1, FONT_UI, C_GREY);
+    disp_present(0, 0, SCREEN_W, SCREEN_H);
 }
 
 static void sd_btn(widget_t *w, int code) { wm_end_modal(w->win, w->id); }
@@ -349,10 +407,117 @@ static void show_desktop(void)
     shell_focus_desktop();
 }
 
+// ---------------------------------------------------------------- volume
+
+#if BOARD_HAS_AUDIO
+extern bool settings_save(void);
+extern void settings_sound_changed(void);
+
+static void volume_inval(void)
+{
+    comp_invalidate(VP_X, VP_Y, VP_W, VP_H);
+    comp_invalidate(VOL_X, DESK_H + 4, VOL_W, TASKBAR_H - 6);
+}
+
+static void volume_set(int v)
+{
+    v = v < 0 ? 0 : v > 100 ? 100 : (v + VOL_STEP / 2) / VOL_STEP * VOL_STEP;
+    if (v == audio_volume) return;
+    audio_volume = v;
+    s_vol_dirty = true;
+    volume_inval();
+    settings_sound_changed();
+}
+
+static void volume_from_y(int y)
+{
+    volume_set((VP_TRACK_Y + VP_TRACK_H - y) * 100 / VP_TRACK_H);
+}
+
+static void volume_close(void)
+{
+    s_vol_open = s_vol_drag = false;
+    volume_inval();
+    if (s_vol_dirty) settings_save();
+    s_vol_dirty = false;
+}
+
+static void volume_step(int d)
+{
+    int v = audio_volume;
+    volume_set(v + d);
+    if (audio_volume != v) audio_chime(CHIME_INFO);
+}
+
+bool shell_volume_mouse(int type, int x, int y, int btn)
+{
+    if (!s_vol_open) return false;
+    rect_t panel = rect_make(VP_X, VP_Y, VP_W, VP_H);
+    rect_t icon = rect_make(VOL_X, DESK_H, VOL_W, TASKBAR_H);
+    if (s_vol_drag) {
+        if (type == EV_MOUSE_MOVE) volume_from_y(y);
+        else if (type == EV_MOUSE_UP) {
+            s_vol_drag = false;
+            if (audio_volume != s_vol_from) audio_chime(CHIME_INFO);
+        }
+        return true;
+    }
+    bool inside = rect_has(&panel, x, y);
+    if (type == EV_WHEEL) { volume_step(btn > 0 ? VOL_STEP : -VOL_STEP); return true; }
+    if (type == EV_MOUSE_DOWN) {
+        if (inside) {
+            if (btn == BTN_LEFT) { s_vol_drag = true; s_vol_from = audio_volume; volume_from_y(y); }
+            return true;
+        }
+        bool on_icon = rect_has(&icon, x, y);
+        volume_close();
+        return on_icon;     // the icon only closes it; any other click also does what it does
+    }
+    if (type == EV_MOUSE_MOVE && inside) wm_set_cursor(&cursor_arrow);
+    return inside;
+}
+
+static bool volume_key(const event_t *e)
+{
+    switch (e->key) {
+    case K_ESC: case K_ENTER: if (e->down) volume_close(); return true;
+    case K_UP: case K_RIGHT: if (e->down) volume_step(VOL_STEP); return true;
+    case K_DOWN: case K_LEFT: if (e->down) volume_step(-VOL_STEP); return true;
+    case K_HOME: if (e->down) volume_step(100); return true;
+    case K_END: if (e->down) volume_step(-100); return true;
+    }
+    return false;
+}
+
+static menu_item_t s_out_items[AUDIO_OUT_COUNT + 1];
+
+static void output_cb(void *ctx, int cmd)
+{
+    if (cmd <= 0 || cmd - 1 == audio_output()) return;
+    audio_set_output(cmd - 1);
+    settings_save();
+    settings_sound_changed();
+    audio_chime(CHIME_INFO);    // played by the new output: the switch comes first in the mixer
+}
+
+static void output_menu(void)
+{
+    for (int i = 0; i < AUDIO_OUT_COUNT; i++)
+        s_out_items[i] = (menu_item_t){audio_output_name(i), i + 1, NULL, NULL, i == audio_output() ? MI_RADIO : 0};
+    s_out_items[AUDIO_OUT_COUNT] = (menu_item_t){NULL, 0, NULL, NULL, 0};
+    menu_popup(s_out_items, VOL_X, DESK_H + 3, true, output_cb, NULL);
+}
+#else
+bool shell_volume_mouse(int type, int x, int y, int btn) { return false; }
+#endif
+
 bool shell_key(const event_t *e)
 {
     bool alt = e->mods & MOD_ALT, ctrl = e->mods & MOD_CTRL;
     bool is_gui = e->key == K_LGUI || e->key == K_RGUI;
+#if BOARD_HAS_AUDIO
+    if (s_vol_open && volume_key(e)) return true;
+#endif
     if (s_switching) {
         if (!e->down && (e->key == K_LALT || e->key == K_RALT)) {
             inval_switcher();
@@ -487,6 +652,13 @@ void shell_mouse(int type, int x, int y, int btn, int clicks)
             shell_open_start_menu();
             return;
         }
+#if BOARD_HAS_AUDIO
+        if (x >= VOL_X && x < VOL_X + VOL_W) {
+            if (btn == BTN_RIGHT) output_menu();
+            else if (btn == BTN_LEFT) { s_vol_open = true; volume_inval(); }
+            return;
+        }
+#endif
         for (int i = 0; i < s_ntasks; i++) {
             rect_t r;
             task_btn_rect(i, &r);
@@ -522,7 +694,7 @@ void shell_mouse(int type, int x, int y, int btn, int clicks)
 
 static void clock_tick(void *arg)
 {
-    comp_invalidate(VGA_W - CLOCK_W - 3, DESK_H + 4, CLOCK_W, TASKBAR_H - 6);
+    comp_invalidate(SCREEN_W - CLOCK_W - 3, DESK_H + 4, CLOCK_W, TASKBAR_H - 6);
 }
 
 void shell_init(void)

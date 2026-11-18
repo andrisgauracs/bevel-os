@@ -596,17 +596,18 @@ static int first_box_at(browser_t *b, int y)
     return lo;
 }
 
-static void big_text(gfx_t *g, int x, int y, const char *s, int n, uint8_t col)
+static void big_text(gfx_t *g, int x, int y, const char *s, int n, pixel_t col)
 {
-    for (int i = 0; i < n; i++) {
-        unsigned c = (unsigned char)s[i];
-        int gi = (c < 32 || c > 126) ? '?' - 32 : (int)c - 32;
+    for (int i = 0; i < n; ) {
+        int b;
+        int gi = gfx_glyph(s, i, n, &b);
         for (int r = 0; r < FONT_UI_H; r++) {
             uint32_t bits = font_ui_rows[gi][r];
             bits |= bits >> 1;
             for (int k = 0; bits; k++, bits = (bits << 1) & 0xFFFF) if (bits & 0x8000) gfx_fill(g, x + k * 2, y + r * 2, 2, 2, col);
         }
         x += (font_ui_adv[gi] + 1) * 2;
+        i += b;
     }
 }
 
@@ -637,7 +638,7 @@ static void view_paint(widget_t *w, gfx_t *g)
             if (sel) gfx_dotted(g, px - 1, py - 1, x->w + 2, x->h + 2, foc ? C_BLACK : C_DKGREY);
             continue;
         }
-        uint8_t col = (x->style & ST_LINK) ? C_BLUE : (x->style & ST_DIM) ? C_DKGREY : C_BLACK;
+        pixel_t col = (x->style & ST_LINK) ? C_BLUE : (x->style & ST_DIM) ? C_DKGREY : C_BLACK;
         // words of one link on one line are joined: the gap gets the underline / highlight too
         int gap = 0;
         if (i > 0 && x->link >= 0 && b->boxes[i - 1].link == x->link && b->boxes[i - 1].y + b->boxes[i - 1].h == x->y + x->h &&
@@ -747,7 +748,7 @@ static void view_mouse(widget_t *w, int type, int x, int y, int btn, int clicks)
 {
     browser_t *b = w->win->user;
     rect_t sr = {w->r.w - 2 - SCROLL_W, 2, SCROLL_W, w->r.h - 4};
-    if (type == EV_WHEEL) { b->scroll -= btn * 45; br_clamp(b); ui_invalidate(w); return; }
+    if (type == EV_WHEEL || type == EV_TOUCH_SCROLL) { b->scroll -= type == EV_WHEEL ? btn * 45 : btn; br_clamp(b); ui_invalidate(w); return; }
     if (b->sb_drag || (type == EV_MOUSE_DOWN && btn == BTN_LEFT && rect_has(&sr, x, y))) {
         if (type == EV_MOUSE_DOWN) b->sb_drag = true;
         b->sb.total = b->doc_h; b->sb.page = view_h(b); b->sb.pos = b->scroll;
@@ -865,11 +866,11 @@ static void load_task(void *arg)
 {
     load_t *l = arg;
     browser_t *b = s_br;
-    // wait a little for Wi-Fi if it is still connecting (just after power-on)
+    // wait a little for the network if it is still connecting (just after power-on)
     for (int i = 0; i < 80; i++) {
         net_status_t st;
         net_status(&st);
-        if (st.state != NET_CONNECTING || (b && b->cancel)) break;
+        if (net_online() || (st.state != NET_CONNECTING && !st.eth_link) || (b && b->cancel)) break;
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     l->status = net_fetch(l->url, &l->body, &l->len, l->ctype, sizeof(l->ctype), l->final_url, sizeof(l->final_url), MAX_PAGE,
@@ -923,7 +924,7 @@ static void br_go(browser_t *b, const char *url_in, bool push)
         if (!l) return;
         net_status_t st;
         net_status(&st);
-        if (st.state == NET_OFF || st.state == NET_IDLE || st.state == NET_FAILED) {
+        if (!net_online() && !st.eth_link && (st.state == NET_OFF || st.state == NET_IDLE || st.state == NET_FAILED)) {
             free(l);
             br_error_page(b, net_error_text(-1));
         } else {
@@ -1105,7 +1106,7 @@ void app_browser(const char *arg)
     b->b_home = ui_button(w, 164, 3, 46, 24, "&Home", on_home);
     b->url_f = ui_textfield(w, 218, 5, 376, "", URL_MAX - 1);
     b->view = ui_canvas(w, 2, 30, 596, 350, &view_ops, true);
-    b->view->flags |= WF_WANT_TAB | WF_WANT_ENTER;
+    b->view->flags |= WF_WANT_TAB | WF_WANT_ENTER | WF_TOUCH_SCROLL;
     b->view->flags &= ~WF_WANT_KEYUP;
     b->status = ui_label(w, 6, 384, 580, 14, "");
     w->on_command = br_command;

@@ -11,6 +11,9 @@ const char *fs_ext(const char *name);
 const char *fs_basename(const char *path);
 bool fs_exists(const char *path);
 bool fs_is_dir(const char *path);
+// Every part of the path below the drive exists spelt exactly so. FAT itself ignores case, so
+// fs_exists("/disk/sd") is true while the card is mounted at "/disk/SD" only.
+bool fs_exists_exact(const char *path);
 int  fs_list(const char *dir, fs_entry_t **out);      // sorted, folders first; caller frees; -1 on error
 bool fs_delete(const char *path);                     // recursive
 bool fs_copy(const char *src, const char *dst);       // recursive

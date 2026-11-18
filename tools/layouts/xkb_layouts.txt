@@ -1,0 +1,58 @@
+xkb_symbols "gb_basic" {
+    key <TLDE> { [ grave, notsign, bar, bar ] };
+    key <AE02> { [ 2, quotedbl, twosuperior, oneeighth ] };
+    key <AE03> { [ 3, sterling, threesuperior, sterling ] };
+    key <AE04> { [ 4, dollar, EuroSign, onequarter ] };
+    key <AC11> { [ apostrophe, at, dead_circumflex, dead_caron ] };
+    key <BKSL> { [ numbersign, asciitilde, dead_grave, dead_breve ] };
+    key <LSGT> { [ backslash, bar, bar, brokenbar ] };
+};
+
+xkb_symbols "es_basic" {
+    key <TLDE> { [ masculine, ordfeminine, backslash, backslash ] };
+    key <AE01> { [ 1, exclam, bar, exclamdown ] };
+    key <AE03> { [ 3, periodcentered, numbersign, sterling ] };
+    key <AE04> { [ 4, dollar, asciitilde, dollar ] };
+    key <AE11> { [ apostrophe, question, backslash, questiondown ] };
+    key <AE12> { [ exclamdown, questiondown, dead_cedilla, dead_ogonek ] };
+    key <AD11> { [ dead_grave, dead_circumflex, bracketleft, dead_caron ] };
+    key <AD12> { [ plus, asterisk, bracketright, dead_macron ] };
+    key <AC10> { [ ntilde, Ntilde, dead_tilde, dead_abovering ] };
+    key <AC11> { [ dead_acute, dead_diaeresis, braceleft, dead_doubleacute ] };
+    key <BKSL> { [ ccedilla, Ccedilla, braceright, dead_breve ] };
+};
+
+xkb_symbols "ch_basic" {
+    key <TLDE> { [ section, degree ] };
+    key <AE01> { [ 1, plus, bar, exclamdown ] };
+    key <AE02> { [ 2, quotedbl, at, oneeighth ] };
+    key <AE03> { [ 3, asterisk, numbersign ] };
+    key <AE04> { [ 4, ccedilla ] };
+    key <AE05> { [ 5, percent ] };
+    key <AE06> { [ 6, ampersand, notsign ] };
+    key <AE07> { [ 7, slash, bar ] };
+    key <AE08> { [ 8, parenleft, cent ] };
+    key <AE09> { [ 9, parenright ] };
+    key <AE10> { [ 0, equal ] };
+    key <AE11> { [ apostrophe, question, dead_acute ] };
+    key <AE12> { [ dead_circumflex, dead_grave, dead_tilde ] };
+    key <AD03> { [ e, E, EuroSign ] };
+    key <AD06> { [ z, Z ] };
+    key <AD09> { [ o, O, oe, OE ] };
+    key <AD11> { [ udiaeresis, egrave, bracketleft ] };
+    key <AD12> { [ dead_diaeresis, exclam, bracketright ] };
+    key <AC10> { [ odiaeresis, eacute ] };
+    key <AC11> { [ adiaeresis, agrave, braceleft ] };
+    key <BKSL> { [ dollar, sterling, braceright ] };
+    key <LSGT> { [ less, greater, backslash, brokenbar ] };
+    key <AB01> { [ y, Y ] };
+    key <AB08> { [ comma, semicolon ] };
+    key <AB09> { [ period, colon ] };
+    key <AB10> { [ minus, underscore ] };
+};
+
+xkb_symbols "ch_fr" {
+    key <AD11> { [ egrave, udiaeresis, bracketleft ] };
+    key <AC10> { [ eacute, odiaeresis ] };
+    key <AC11> { [ agrave, adiaeresis, braceleft ] };
+};

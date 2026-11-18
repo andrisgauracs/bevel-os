@@ -33,7 +33,7 @@ no longer applies; "survives the plug being pulled" replaced it and is tested.
   buffer and copied to PSRAM once, timed to follow the beam (tear-free with one framebuffer).
 - **Window manager and toolkit** (`main/wm.c`, `main/ui.c`, `main/menu.c`, `main/dlg.c`):
   overlapping windows, move/resize/minimise/maximise, modal dialogs, menu bars and popup menus,
-  buttons, check boxes, radio buttons, text fields, sliders, list views with columns, scrollbars,
+  buttons, check boxes, radio buttons, text fields, sliders, list views with columns, drop-down lists, scrollbars,
   message boxes, a text prompt and an open/save dialog. Focus is always visible (dotted rectangle
   or highlight) and returns to the right place when a window closes.
 - **Shell** (`main/shell.c`): desktop icons, taskbar with a button per window and an uptime clock,

@@ -1,6 +1,9 @@
-# ESP-IDF build output and component-manager downloads
+# ESP-IDF build output and component-manager downloads. Each board builds in its own build-<target>
+# directory (CMakePresets.json) with its sdkconfig there; "build" only holds the serial log.
 build/
+build-*/
 managed_components/
+/sdkconfig
 sdkconfig.old
 
 # Doom game data: fetched by tools/fetch_doom.sh, never committed
@@ -16,3 +19,10 @@ tools/assets/out/
 .DS_Store
 __pycache__/
 *.pyc
+
+# Editor setup the ESP-IDF extension writes per machine (toolchain paths, COM port, clangd)
+.vscode/settings.json
+.clangd
+
+# Wi-Fi credentials copied between boards by hand: never committed
+disk/System/wifi.ini
