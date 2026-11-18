@@ -33,6 +33,9 @@ CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_esp32p4.csv"
 CONFIG_FATFS_VOLUME_COUNT=3
 
+# The drive, SD card and USB stick each take a slot in this table, and the camera needs one too
+CONFIG_VFS_MAX_COUNT=12
+
 # Wi-Fi through the ESP32-C6 (ESP-Hosted over SDIO 4-bit: CLK 18, CMD 19, D0-D3 14-17, C6 reset GPIO54;
 # the defaults of esp_hosted for the ESP32-P4)
 CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
