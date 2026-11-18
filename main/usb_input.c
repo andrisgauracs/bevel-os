@@ -327,9 +327,41 @@ static void open_device(hid_host_device_handle_t h)
     if (hid_host_device_start(h) != ESP_OK) { it->used = false; recount(); }
 }
 
+#if CONFIG_IDF_TARGET_ESP32S3
+#ifndef CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+#error "Stale sdkconfig: delete this build directory's sdkconfig so sdkconfig.defaults.esp32s3 applies"
+#endif
+// The S3's controller has 8 host channels and every open endpoint keeps one: each device takes one
+// for its control endpoint, a hub a second for its status endpoint, each keyboard or mouse interface
+// one more. A dock's hubs, Ethernet adapter and billboard device use them up before a receiver's mouse
+// gets its turn, so what this OS can never use is turned away, which gives its channel back.
+// Only the device descriptor is known at this point. Class 0 means "see the interfaces", which could
+// be anything, so those stay unless they are a network adapter recognised by their USB ID.
+static bool enum_filter(const usb_device_desc_t *d, uint8_t *config)
+{
+    (void)config;   // stays at the first configuration
+    switch (d->bDeviceClass) {
+    case USB_CLASS_HUB:
+    case USB_CLASS_HID:
+    case USB_CLASS_MISC:
+        return true;
+    case USB_CLASS_PER_INTERFACE:
+        if (d->idVendor == 0x0bda && (d->idProduct & 0xff00) == 0x8100) return false;   // Realtek network
+        if (d->idVendor == 0x0b95) return false;                                        // ASIX network
+        return true;
+    default:
+        return false;   // billboard, vendor-specific, and the rest
+    }
+}
+#define USB_ENUM_FILTER enum_filter
+#else
+#define USB_ENUM_FILTER NULL    // the P4's controller has channels to spare
+#endif
+
 static void usb_lib_task(void *arg)
 {
-    const usb_host_config_t cfg = {.skip_phy_setup = false, .intr_flags = ESP_INTR_FLAG_LEVEL1};
+    const usb_host_config_t cfg = {.skip_phy_setup = false, .intr_flags = ESP_INTR_FLAG_LEVEL1,
+                                   .enum_filter_cb = USB_ENUM_FILTER};
     ESP_ERROR_CHECK(usb_host_install(&cfg));
     force_full_speed();     // before the first bus reset (the connection is debounced for 500 ms)
     xTaskNotifyGive((TaskHandle_t)arg);

@@ -27,6 +27,9 @@ CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000
 
+# USB host: lets main/usb_input.c turn away devices that would use up the 8 host channels
+CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK=y
+
 # Storage: 12 MB FAT drive in the internal flash (no card reader on this board)
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_esp32s3.csv"
 
