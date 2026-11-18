@@ -44,6 +44,10 @@ idf_component_register(SRCS "main.c" "boot.c" "board.c" "audio.c" "clock.c" ${BO
                        EMBED_FILES ${EMBEDDED})
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-format-truncation)
 if(NOT IDF_TARGET STREQUAL "esp32s3")
+    # The drawing loops run from cached memory, and where they fall across cache lines changed text and
+    # fill speed by 20% from one build to the next, with no change to the code that was measured.
+    set_source_files_properties(gfx.c comp.c display_dsi.c PROPERTIES
+                                COMPILE_OPTIONS "-falign-functions=32;-falign-loops=32")
     # A fault in a loaded app's own code is caught and turned into an error dialog: every CPU exception
     # passes through app_loader.c before ESP-IDF's panic handler sees it. On the S3 the exception
     # handlers are installed per core instead (app_loader.c).

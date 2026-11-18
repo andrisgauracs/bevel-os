@@ -70,11 +70,11 @@ static inline pixel_t gfx_from8(uint8_t c) { return c; }
 
 // Starts the panel. For the VGA board the scan-out interrupt lives on the core that calls this.
 esp_err_t disp_init(void);
-pixel_t *disp_fb(void);                 // logical framebuffer, SCREEN_W x SCREEN_H pixels
+pixel_t *disp_fb(void);                 // SCREEN_W x SCREEN_H pixels, to draw into before disp_present()
 
 // Copy w x h pixels (row stride `stride`, in pixels) to the logical framebuffer at (x, y) and show them.
 void disp_put(int x, int y, int w, int h, const pixel_t *src, int stride);
-// Show a part of the logical framebuffer again (after drawing into it directly, or when an overlay changed).
+// Show a part of the logical framebuffer (after drawing into it directly: the boot splash, the shut-down screen).
 void disp_present(int x, int y, int w, int h);
 
 // What the screen shows, converted to RGB565 into dst (SCREEN_W x SCREEN_H pixels), pointer and
