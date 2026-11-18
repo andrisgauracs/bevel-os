@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""Append the accented glyphs the keyboard layouts need to the two font sources.
+"""Write the accented glyphs the keyboard layouts need into the two font sources.
 
 The fonts are ASCII-art files in tools/assets/src/ and start as plain ASCII 32..126.
-This script reads the base glyphs from them and writes the accent versions below them,
-in the same format, so a letter that was tuned by hand is never redrawn by hand twice.
-Running the script again writes the same file.
+This script reads the base letters from them and writes everything above 126 below them,
+in the same format, so a letter tuned by hand is never redrawn twice. Running it again
+writes the same file.
 
-Marks sit above the letter (2 rows for acute, grave, circumflex; 1 row for diaeresis
-and tilde) or below it (cedilla). Sharp s and the two marks a dead key prints on its
-own are drawn by hand: they have no base letter.
+A mark is centred on the ink of its letter and always keeps one empty row from it:
+  - lowercase has room above its x-height; i and j-like dots are removed first;
+  - a capital reaches almost to the top of the cell, so it gives up one of its repeated
+    rows and moves down by one, which makes room for the mark;
+  - a cedilla hangs from the bottom of the letter, touching it.
+Acute rises to the right, grave rises to the left. A one-column letter (the UI font's i
+and I) is widened to three columns so that the mark fits.
 
-Usage: python3 tools/assets/add_accents.py
+Letters with no base (sharp s, ae) and the marks a dead key prints on its own are drawn
+by hand here; the Latin-1 punctuation is in hand_glyphs.py.
+
+Usage: python3 tools/assets/add_accents.py, then tools/assets/gen_assets.py
 """
+import math
 import os
 import sys
 
@@ -29,7 +37,8 @@ ACCENTS = {
     0xF2: ("o", "grave"), 0xF3: ("o", "acute"), 0xF4: ("o", "circumflex"), 0xF6: ("o", "diaeresis"),
     0xF9: ("u", "grave"), 0xFA: ("u", "acute"), 0xFB: ("u", "circumflex"), 0xFC: ("u", "diaeresis"),
     0xF1: ("n", "tilde"), 0xE7: ("c", "cedilla"),
-    0xC0: ("A", "grave"), 0xC1: ("A", "acute"), 0xC2: ("A", "circumflex"), 0xC4: ("A", "diaeresis"),
+    0xC0: ("A", "grave"), 0xC1: ("A", "acute"), 0xC2: ("A", "circumflex"), 0xC3: ("A", "tilde"),
+    0xC4: ("A", "diaeresis"),
     0xC8: ("E", "grave"), 0xC9: ("E", "acute"), 0xCA: ("E", "circumflex"), 0xCB: ("E", "diaeresis"),
     0xCC: ("I", "grave"), 0xCD: ("I", "acute"), 0xCE: ("I", "circumflex"), 0xCF: ("I", "diaeresis"),
     0xD2: ("O", "grave"), 0xD3: ("O", "acute"), 0xD4: ("O", "circumflex"), 0xD6: ("O", "diaeresis"),
@@ -37,83 +46,103 @@ ACCENTS = {
     0xD1: ("N", "tilde"), 0xC7: ("C", "cedilla"),
 }
 
-# mono glyphs are 8 x 16, caps rows 2..11, x-height rows 5..11, descenders rows 12..15.
+# the rows of each font: cell height, top of the capitals, top of the x-height, baseline row
+METRICS = {"mono": (16, 2, 5, 11), "ui": (12, 2, 4, 9)}
+
+
+def art(height, first, rows, width=None):
+    """A glyph of the given height from rows placed at row 'first'."""
+    w = width or len(rows[0])
+    return ["." * w] * first + rows + ["." * w] * (height - first - len(rows))
+
+
 HAND = {
     "mono": {
-        0xDF: ["........", "........", ".####...", "#....#..", "#....#..", "#....#..",
-               ".####...", "#....#..", "#....#..", "#....#..", "#...##..", ".###.#..",
-               "........", "........", "........", "........"],
-        0xB4: ["........", "........", "....#...", "...#....", "........", "........",
-               "........", "........", "........", "........", "........", "........",
-               "........", "........", "........", "........"],
-        0xA8: ["........", "........", "........", "..#..#..", "........", "........",
-               "........", "........", "........", "........", "........", "........",
-               "........", "........", "........", "........"],
+        0xDF: art(16, 2, ["..###...", ".#...#..", ".#...#..", ".#..#...", ".#.##...",
+                          ".#...#..", ".#....#.", ".#....#.", ".#...#..", ".#.##..."]),
+        0xC6: art(16, 2, ["..######", ".##.#...", ".#..#...", "#...#...", "#...####",
+                          "#####...", "#...#...", "#...#...", "#...#...", "#...####"]),
+        0xE6: art(16, 5, [".##.##..", "...#..#.", "...#..#.", ".######.", "#..#....",
+                          "#..#..#.", ".##.##.."]),
+        0xB4: art(16, 2, ["....#...", "...#...."]),
+        0xA8: art(16, 3, ["..#..#.."]),
     },
-    # ui glyphs are 12 rows, caps rows 2..9, x-height rows 4..9, descenders rows 10..11
     "ui": {
-        0xDF: ["......", ".#..#.", "#.#..#", "#.#..#", ".###..", "#.#..#", "#.#..#", "#.#..#",
-               "#...##", ".##.##", "......", "......"],
-        0xB4: ["...#", "..#.", "....", "....", "....", "....", "....", "....",
-               "....", "....", "....", "...."],
-        0xA8: ["#..#", "....", "....", "....", "....", "....", "....", "....",
-               "....", "....", "....", "...."],
+        0xDF: art(12, 2, [".##..", "#..#.", "#..#.", "#.#..", "#..#.", "#...#", "#...#", "#.##."]),
+        0xC6: art(12, 2, ["...#####", "..##....", ".#.#....", ".#.####.", "#..#....", "####....",
+                          "#..#....", "#..#####"]),
+        0xE6: art(12, 4, [".##.##.", "...#..#", ".######", "#..#...", "#..#..#", ".##.##."]),
+        0xB4: art(12, 0, ["...#", "..#."]),
+        0xA8: art(12, 0, ["#..#"]),
     },
 }
-# the hand-drawn punctuation designs join the hand-drawn accents
-for font in ("mono", "ui"):
+# the hand-drawn punctuation designs join them
+for font in HAND:
     HAND[font].update(hand_glyphs.EXTRA[font])
 
-def mark_lines(mark, w, is_caps, is_mono):
-    """The mark rows, placed where they belong for a letter of width w.
+# the two rows of a tilde, by the width of the letter under it
+TILDE = {5: (".##.#", "#..#."), 6: (".##..#", "#..##."), 7: (".###..#", "#...##.")}
 
-    Returns (top_rows, bottom_rows): rows to put above the letter and rows below it.
-    """
-    cx = w // 2
-    if mark == "cedilla":
-        d = w if is_mono else w
-        top = []
-        r1 = ["."] * d; r1[cx] = "#"
-        r2 = ["."] * d; r2[max(0, cx - 1)] = "#"
-        return top, ["".join(r1), "".join(r2)]
-    # rows above: 2 for acute / grave / circumflex, 1 for diaeresis / tilde
-    n = 2 if mark in ("acute", "grave", "circumflex") else 1
-    # free space above the letter: mono caps 2 rows, mono lowercase 3, ui caps 2, ui lowercase 3
-    free = 2 if is_caps else 3
-    if is_mono:
-        free = 2 if is_caps else 3
-    gap = free - n
-    lines = []
-    for i in range(n):
-        cols = []
-        if mark == "acute":
-            cols = [cx + 1 - (n - 1 - i), cx] if i == n - 1 else [cx + 1 - (n - 1 - i)]
-        elif mark == "grave":
-            cols = [cx + (n - 1 - i), cx] if i == n - 1 else [cx + (n - 1 - i)]
-        elif mark == "circumflex":
-            cols = [cx] if i == 0 else [cx - 1, cx + 1]
-        elif mark == "diaeresis":
-            cols = [cx - 1, cx + 1]
-        elif mark == "tilde":
-            cols = [cx - 2, cx - 1, cx + 1, cx + 2]
-        width = w
-        for c in cols:
-            width = max(width, c + 1)
-        row = ["."] * width
-        for c in cols:
-            if c >= 0:
-                row[c] = "#"
-        lines.append("".join(row))
-    top = [""] * gap + lines
-    return top, []
 
-def combine(base_rows, w, is_caps, is_mono, mark):
-    top, bottom = mark_lines(mark, w, is_caps, is_mono)
-    width = w
-    for r in top + bottom:
-        width = max(width, len(r))
-    body = [r + "." * (width - w) for r in base_rows]
-    return [r + "." * (width - len(r)) for r in top] + body + [r + "." * (width - len(r)) for r in bottom]
+def ink_span(rows):
+    cols = [x for r in rows for x, c in enumerate(r) if c == "#"]
+    return min(cols), max(cols)
+
+
+def put(rows, y, x):
+    rows[y] = rows[y][:x] + "#" + rows[y][x + 1:]
+
+
+def make_room_above(rows, top, base):
+    """Drop one repeated row of a capital and move what was above it down by one."""
+    for y in range(top + 1, base):
+        if rows[y] == rows[y + 1]:
+            return ["." * len(rows[0])] + rows[:y] + rows[y + 1:]
+    raise ValueError("no repeated row to remove")
+
+
+def accented(base_rows, letter, mark, font):
+    _, cap_top, x_top, base = METRICS[font]
+    rows = list(base_rows)
+    if letter.islower():
+        rows = ["." * len(r) if y < x_top else r for y, r in enumerate(rows)]  # no dot on the i
+    if ink_span(rows)[1] == ink_span(rows)[0]:                                  # a single stem
+        rows = ["." + r + "." for r in rows]
+    if mark != "cedilla" and letter.isupper():
+        rows = make_room_above(rows, cap_top, base)
+        bottom = cap_top - 1        # the row above is the mark's gap to the moved-down letter
+    else:
+        bottom = x_top - 2
+    lo, hi = ink_span(rows)
+    span = hi - lo + 1
+    left, right = (lo + hi) // 2, (lo + hi + 1) // 2    # the same column when the span is odd
+    even = left != right
+    if mark == "acute":
+        high, low = (right, left) if even else (left + 1, left)
+        put(rows, bottom - 1, high); put(rows, bottom, low)
+    elif mark == "grave":
+        high, low = (left, right) if even else (left - 1, left)
+        put(rows, bottom - 1, high); put(rows, bottom, low)
+    elif mark == "circumflex":
+        put(rows, bottom - 1, left); put(rows, bottom - 1, right)
+        put(rows, bottom, left - 1); put(rows, bottom, right + 1)
+    elif mark == "diaeresis":
+        reach = 2 if not even and span > 5 else 1
+        put(rows, bottom, left - reach); put(rows, bottom, right + reach)
+    elif mark == "tilde":
+        for y, pattern in zip((bottom - 1, bottom), TILDE[span]):
+            for x, c in enumerate(pattern):
+                if c == "#":
+                    put(rows, y, lo + x)
+    elif mark == "cedilla":
+        stem = math.ceil((lo + hi) / 2)
+        put(rows, base + 1, stem)
+        if font == "mono":
+            put(rows, base + 2, stem + 1); put(rows, base + 3, stem); put(rows, base + 3, stem - 1)
+        else:
+            put(rows, base + 2, stem); put(rows, base + 2, stem - 1)
+    return rows
+
 
 def parse(path):
     """Return the base lines (without the generated block) and {code: rows}."""
@@ -139,39 +168,31 @@ def parse(path):
             cur.append(s)
     return base, glyphs
 
+
 def main(argv):
-    for name, is_mono in (("font_mono.txt", True), ("font_ui.txt", False)):
+    for name, font in (("font_mono.txt", "mono"), ("font_ui.txt", "ui")):
         path = os.path.join(SRC, name)
         base, glyphs = parse(path)
-        rows_count = 16 if is_mono else 12
-        for code, rows in HAND["mono" if is_mono else "ui"].items():
-            assert len(rows) == rows_count, "%s: hand glyph has %d rows" % (name, len(rows))
+        height = METRICS[font][0]
+        for code, rows in HAND[font].items():
+            assert len(rows) == height, "%s 0x%02X: hand glyph has %d rows" % (name, code, len(rows))
             glyphs[code] = rows
         for code, (letter, mark) in ACCENTS.items():
-            base_rows = glyphs[ord(letter)]
-            w = len(base_rows[0])
-            rows = combine(base_rows, w, letter.isupper(), is_mono, mark)
-            if len(rows) > rows_count:
-                # the mark pushed the letter down: take the rows that keep the letter at its
-                # own height (the base glyph sits at the bottom of its cell)
-                rows = rows[len(rows) - rows_count:]
-            assert len(rows) == rows_count, "%s 0x%02X: %d rows" % (name, code, len(rows))
-            glyphs[code] = rows
+            glyphs[code] = accented(glyphs[ord(letter)], letter, mark, font)
         out = list(base)
         if out and out[-1] != "":
             out.append("")
         out.append(MARK)
-        out.append("; accented glyphs: the mark sits above the letter (2 rows for acute, grave,")
-        out.append("; circumflex, 1 row for diaeresis and tilde) or below it (cedilla).")
         for code in sorted(glyphs):
             if code <= 126:
                 continue
             out.append("@ 0x%02X" % code)
             out.extend(glyphs[code])
-        with open(path, "w", encoding="ascii") as f:
+        with open(path, "w", encoding="ascii", newline="\n") as f:
             f.write("\n".join(out) + "\n")
         print("%s: %d glyphs" % (name, len(glyphs)))
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

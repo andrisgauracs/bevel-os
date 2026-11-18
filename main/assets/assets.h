@@ -10,7 +10,7 @@
 // leftmost pixel.
 #define FONT_UI_H 12
 #define FONT_UI_BASELINE 9
-#define FONT_NGLYPH 170
+#define FONT_NGLYPH 171
 extern const uint8_t  font_mono[FONT_NGLYPH][16];
 extern const uint8_t  font_ui_adv[FONT_NGLYPH];          // advance in px, INCLUDING 1px inter-glyph gap
 extern const uint16_t font_ui_rows[FONT_NGLYPH][FONT_UI_H];
