@@ -71,8 +71,8 @@ at 2x, not photos. More in [captures/](captures/), all from the real board.
   stick, downloads and uploads files, and renames, deletes and makes folders (`main/remote_files.c`).
 - USB sticks: a FAT-formatted stick on the USB host port, directly or behind a hub, appears as
   `/disk/USB` in Files, the file dialogs, apps and the web file browser. Eject (the button inside
-  the drive, File > Eject, the right-click menu or `eject` in the Terminal) unmounts a stick or an
-  SD card so it can be taken out safely.
+  the drive, File > Eject, the right-click menu or `eject` in the Terminal, with `usb` or `sd` when both are
+  mounted) unmounts a stick or an SD card so it can be taken out safely.
 - Original look in the mid-90s style: own bitmap fonts, icons and cursors (drawn as ASCII art in
   `tools/assets/src/`), no copied artwork.
 

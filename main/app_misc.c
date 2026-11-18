@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <unistd.h>
@@ -609,6 +610,31 @@ static bool term_parent_ok(const char *p)
     return term_dir(d);
 }
 
+// eject [usb|sd]: with no name, whichever one is mounted; with both mounted it has to be named.
+static void term_eject(term_t *t, const char *which)
+{
+    bool usb = which && !strcasecmp(which, "usb");
+#if BOARD_HAS_SD
+    bool sd = which && !strcasecmp(which, "sd");
+    if (which && !usb && !sd) { term_puts(t, "eject: use eject usb or eject sd\n"); return; }
+    if (!which && storage_usb_ok() && storage_sd_ok()) {
+        term_puts(t, "eject: both are mounted, use eject usb or eject sd\n");
+        return;
+    }
+    if (!which) { usb = storage_usb_ok(); sd = storage_sd_ok(); }
+    if (!usb && !sd) { term_puts(t, "eject: no USB stick or SD card mounted\n"); return; }
+    if (sd) {
+        if (!storage_sd_ok()) term_puts(t, "eject: no SD card mounted\n");
+        else term_puts(t, storage_eject(SD_ROOT) ? "The SD card can be removed.\n" : "eject: the SD card could not be ejected\n");
+        return;
+    }
+#else
+    if (which && !usb) { term_puts(t, "eject: use eject or eject usb\n"); return; }
+#endif
+    if (!storage_usb_ok()) term_puts(t, "eject: no USB stick mounted\n");
+    else term_puts(t, storage_eject(USB_ROOT) ? "The USB stick can be removed.\n" : "eject: the USB stick could not be ejected\n");
+}
+
 static void term_exec(term_t *t, char *line)
 {
     char *argv[4] = {0};
@@ -633,7 +659,11 @@ static void term_exec(term_t *t, char *line)
                      "mem         memory in use        df         drive space\n"
                      "ver         version              uptime     time since power-on\n"
                      "clear       clear the screen     exit       close the terminal\n"
+#if BOARD_HAS_SD
+                     "eject [usb|sd]  unmount the USB stick or the SD card\n");
+#else
                      "eject       unmount the USB stick\n");
+#endif
     } else if (!strcmp(c, "ls") || !strcmp(c, "dir")) {
         term_path(t, argv[1], a, sizeof(a));
         fs_entry_t *list;
@@ -713,7 +743,7 @@ static void term_exec(term_t *t, char *line)
         os_usb_summary(a, sizeof(a));
         term_printf(t, "USB stick: %s\n", a);
     } else if (!strcmp(c, "eject")) {
-        term_puts(t, usb_storage_eject() ? "The USB stick can be removed.\n" : "eject: no USB stick mounted\n");
+        term_eject(t, argv[1]);
     } else if (!strcmp(c, "ver")) {
         term_puts(t, OS_NAME " " OS_VERSION " on " OS_CHIP "\n");
     } else if (!strcmp(c, "uptime")) {
