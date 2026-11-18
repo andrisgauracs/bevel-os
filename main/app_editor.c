@@ -410,6 +410,7 @@ static void ta_mouse(widget_t *w, int type, int x, int y, int btn, int clicks)
     textarea_t *t = (textarea_t *)w;
     rect_t sr = {w->r.w - 2 - SCROLL_W, 2, SCROLL_W, w->r.h - 4};
     if (type == EV_WHEEL) { ta_set_top(t, t->top_line - btn * 3); ui_invalidate(w); return; }
+    if (type == EV_TOUCH_SCROLL) { ta_set_top(t, t->top_line - ui_touch_steps(btn, CH_H)); ui_invalidate(w); return; }
     if (t->sb_drag || (type == EV_MOUSE_DOWN && btn == BTN_LEFT && rect_has(&sr, x, y))) {
         if (type == EV_MOUSE_DOWN) t->sb_drag = true;
         t->vsb.total = t->nlines; t->vsb.page = ta_rows(t); t->vsb.pos = t->top_line;
@@ -460,7 +461,7 @@ static textarea_t *ta_new(window_t *win, int x, int y, int w, int h)
 {
     textarea_t *t = ui_new(win, &ta_class, sizeof(textarea_t), x, y, w, h);
     if (!t) return NULL;
-    t->w.flags = WF_TABSTOP | WF_IBEAM | WF_WANT_ENTER | WF_WANT_TAB | WF_WANT_CHARS | WF_CARET | WF_WANT_ARROWS;
+    t->w.flags = WF_TABSTOP | WF_IBEAM | WF_WANT_ENTER | WF_WANT_TAB | WF_WANT_CHARS | WF_CARET | WF_WANT_ARROWS | WF_TOUCH_SCROLL;
     ta_set_text(t, "", 0);
     return t;
 }

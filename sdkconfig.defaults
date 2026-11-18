@@ -40,3 +40,8 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 # Network and HTTPS for the browser: keep their buffers out of the scarce internal RAM
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+
+# JPEG in the picture viewer: shrinking while decoding (the S3 turns its ROM decoder off for this),
+# the faster Huffman tables, and a read buffer that suits files on FAT
+CONFIG_JD_SZBUF=4096
+CONFIG_JD_FASTDECODE_TABLE=y

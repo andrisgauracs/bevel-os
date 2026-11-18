@@ -748,7 +748,7 @@ static void view_mouse(widget_t *w, int type, int x, int y, int btn, int clicks)
 {
     browser_t *b = w->win->user;
     rect_t sr = {w->r.w - 2 - SCROLL_W, 2, SCROLL_W, w->r.h - 4};
-    if (type == EV_WHEEL) { b->scroll -= btn * 45; br_clamp(b); ui_invalidate(w); return; }
+    if (type == EV_WHEEL || type == EV_TOUCH_SCROLL) { b->scroll -= type == EV_WHEEL ? btn * 45 : btn; br_clamp(b); ui_invalidate(w); return; }
     if (b->sb_drag || (type == EV_MOUSE_DOWN && btn == BTN_LEFT && rect_has(&sr, x, y))) {
         if (type == EV_MOUSE_DOWN) b->sb_drag = true;
         b->sb.total = b->doc_h; b->sb.page = view_h(b); b->sb.pos = b->scroll;
@@ -1106,7 +1106,7 @@ void app_browser(const char *arg)
     b->b_home = ui_button(w, 164, 3, 46, 24, "&Home", on_home);
     b->url_f = ui_textfield(w, 218, 5, 376, "", URL_MAX - 1);
     b->view = ui_canvas(w, 2, 30, 596, 350, &view_ops, true);
-    b->view->flags |= WF_WANT_TAB | WF_WANT_ENTER;
+    b->view->flags |= WF_WANT_TAB | WF_WANT_ENTER | WF_TOUCH_SCROLL;
     b->view->flags &= ~WF_WANT_KEYUP;
     b->status = ui_label(w, 6, 384, 580, 14, "");
     w->on_command = br_command;

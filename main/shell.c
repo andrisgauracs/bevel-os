@@ -146,7 +146,11 @@ static void task_btn_rect(int i, rect_t *r)
 
 void shell_paint_desktop(gfx_t *g, const rect_t *area)
 {
+#if BOARD_HAS_WALLPAPER
+    wallpaper_paint(g, gfx_from8(shell_desktop_color));
+#else
     gfx_fill(g, 0, 0, SCREEN_W, DESK_H, gfx_from8(shell_desktop_color));
+#endif
     for (int i = 0; i < s_desk_n; i++) {
         rect_t r;
         desk_cell(i, &r);

@@ -128,6 +128,8 @@ const char *clip_get(int *len);
 #define WF_WANT_ARROWS 0x0100
 #define WF_WANT_ESC   0x0200
 #define WF_WANT_KEYUP 0x0400   // also receives key releases (games)
+#define WF_WANT_PINCH 0x0800   // receives EV_PINCH: mouse(type, x, y, btn = scale, clicks = PINCH_*)
+#define WF_TOUCH_SCROLL 0x1000 // a finger dragged on it scrolls it: receives EV_TOUCH_SCROLL
 
 // Notification codes for on_action
 enum { UI_CLICK = 1, UI_CHANGE, UI_SELECT, UI_ACTIVATE, UI_CONTEXT };
@@ -163,6 +165,7 @@ void ui_enable(widget_t *w, bool on);
 void ui_show(widget_t *w, bool on);
 bool ui_focused(const widget_t *w);     // has focus and its window is active
 void ui_capture(widget_t *w);           // receive mouse moves/up until the button is released
+int  ui_touch_steps(int dy, int step);  // EV_TOUCH_SCROLL: whole rows of `step` pixels, keeping the rest
 void ui_notify(widget_t *w, int code);
 bool ui_caret_on(void);                 // caret blink phase
 
@@ -258,6 +261,7 @@ bool shell_has_focus(void);                                    // desktop or tas
 void shell_open_start_menu(void);
 void shell_shutdown_dialog(void);
 extern uint8_t shell_desktop_color;
+void wallpaper_paint(gfx_t *g, pixel_t background);            // boards with BOARD_HAS_WALLPAPER
 
 // Menu internals used by wm.c
 void menu_paint(gfx_t *g, const rect_t *area);
@@ -275,3 +279,5 @@ void ui_popup_close(void);
 void ui_popup_paint(gfx_t *g, const rect_t *area);
 bool ui_popup_key(const event_t *e);                           // true if consumed
 bool ui_popup_mouse(int type, int x, int y, int btn);          // true if consumed
+bool ui_popup_scrolls_at(int x, int y);                        // a finger dragged here scrolls the list
+void ui_popup_touch_scroll(int dy);

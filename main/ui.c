@@ -938,8 +938,8 @@ static void lv_mouse(widget_t *w, int type, int x, int y, int btn, int clicks)
     int y0 = 2 + (lv->ncols ? LV_HDR_H : 0);
     bool need_sb = lv->count > lv->sb.page;
     rect_t sr = {w->r.w - 2 - SCROLL_W, y0, SCROLL_W, w->r.h - 2 - y0};
-    if (type == EV_WHEEL) {
-        lv->sb.pos -= btn * 3;
+    if (type == EV_WHEEL || type == EV_TOUCH_SCROLL) {
+        lv->sb.pos -= type == EV_WHEEL ? btn * 3 : ui_touch_steps(btn, LV_ROW_H);
         scroll_clamp(&lv->sb);
         ui_invalidate(w);
         return;
@@ -975,7 +975,7 @@ widget_t *ui_listview(window_t *win, int x, int y, int w, int h, lv_get_fn get)
     if (!lv) return NULL;
     lv->get = get;
     lv->sel = -1;
-    lv->w.flags = WF_TABSTOP | WF_WANT_ENTER | WF_WANT_CHARS | WF_WANT_ARROWS;
+    lv->w.flags = WF_TABSTOP | WF_WANT_ENTER | WF_WANT_CHARS | WF_WANT_ARROWS | WF_TOUCH_SCROLL;
     return &lv->w;
 }
 
@@ -1204,6 +1204,21 @@ bool ui_popup_key(const event_t *e)
     pop_ensure_visible();
     if (s_pop.hot != old_hot || s_pop.sb.pos != old_pos) comp_invalidate_rect(&s_pop.r);
     return true;
+}
+
+bool ui_popup_scrolls_at(int x, int y)
+{
+    if (!s_pop.dd || !rect_has(&s_pop.r, x, y)) return false;
+    rect_t sr = pop_sb_rect();
+    return !(pop_has_sb() && rect_has(&sr, x, y));
+}
+
+void ui_popup_touch_scroll(int dy)
+{
+    if (!s_pop.dd) return;
+    s_pop.sb.pos -= ui_touch_steps(dy, LV_ROW_H);
+    scroll_clamp(&s_pop.sb);
+    comp_invalidate_rect(&s_pop.r);
 }
 
 bool ui_popup_mouse(int type, int x, int y, int btn)

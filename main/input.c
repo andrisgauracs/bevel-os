@@ -335,14 +335,22 @@ static void post_move(void)
     }
 }
 
-// The pointer is hidden while the touchscreen is in use and comes back with the mouse.
-static volatile bool s_touching, s_ptr_hidden;
+// The pointer is hidden while the touchscreen is in use and comes back with the mouse. While the
+// system is busy it shows anyway: the hourglass is the only sign that a tap was understood.
+static volatile bool s_touching, s_ptr_hidden, s_ptr_busy;
 
 static void pointer_wanted(bool on)
 {
     if (s_ptr_hidden == !on) return;
     s_ptr_hidden = !on;
-    disp_cursor_show(on);
+    disp_cursor_show(on || s_ptr_busy);
+}
+
+void input_pointer_busy(bool busy)
+{
+    if (s_ptr_busy == busy) return;
+    s_ptr_busy = busy;
+    if (s_ptr_hidden) disp_cursor_show(busy);
 }
 
 // While the boot splash owns the screen the pointer is not drawn and there is nothing under it to
@@ -384,6 +392,46 @@ void input_touch(int x, int y, bool down)
         input_mouse_buttons(s_buttons & ~BTN_LEFT);
     }
 }
+
+void input_touch_right_click(int x, int y)
+{
+    pointer_wanted(false);
+    mouse_to(x, y);
+    input_mouse_buttons(s_buttons | BTN_RIGHT);
+    input_mouse_buttons(s_buttons & ~BTN_RIGHT);
+}
+
+void input_pinch(int x, int y, int scale, int phase)
+{
+    if (s_ptr_frozen) return;
+    pointer_wanted(false);
+    event_t e = {.type = EV_PINCH, .x = x, .y = y, .scale = scale, .button = phase};
+    ev_post(&e);
+}
+
+// Moves are merged, as the mouse's are: a busy GUI gets the latest position, not a backlog.
+static volatile int s_touch_x, s_touch_y;
+static volatile bool s_touch_move_pending;
+
+void input_touch_gesture(int phase, int x, int y)
+{
+    if (s_ptr_frozen) return;
+    if (phase == TOUCH_DRAG_MOVE) {
+        s_touch_x = x; s_touch_y = y;
+        if (s_touch_move_pending) return;
+        s_touch_move_pending = true;
+    }
+    event_t e = {.type = EV_TOUCH, .x = x, .y = y, .button = phase};
+    if (!ev_post(&e) && phase == TOUCH_DRAG_MOVE) s_touch_move_pending = false;
+}
+
+void input_touch_latest(int *x, int *y)
+{
+    s_touch_move_pending = false;
+    *x = s_touch_x; *y = s_touch_y;
+}
+
+void input_touch_hide_pointer(void) { pointer_wanted(false); }
 
 bool input_touching(void) { return s_ptr_hidden; }
 

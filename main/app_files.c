@@ -199,7 +199,7 @@ const char *fs_type_name(const fs_entry_t *e)
     const char *x = fs_ext(e->name);
     if (ext_in(x, "txt md log ini cfg csv")) return "Text";
     if (ext_in(x, "c h py sh json")) return "Source text";
-    if (ext_in(x, "bmp")) return "Picture";
+    if (ext_in(x, "bmp jpg jpeg png")) return "Picture";
     if (ext_in(x, "wav")) return "Sound";
     if (ext_in(x, "elf app")) return "Program";
     return "File";
@@ -210,7 +210,7 @@ const bitmap_t *fs_type_icon(const fs_entry_t *e)
     if (e->is_dir) return &icon16_folder;
     const char *x = fs_ext(e->name);
     if (ext_in(x, "txt md log ini cfg csv c h py sh json")) return &icon16_text;
-    if (ext_in(x, "bmp")) return &icon16_image;
+    if (ext_in(x, "bmp jpg jpeg png")) return &icon16_image;
     if (ext_in(x, "elf app")) return strcasestr(e->name, "game") || strcasestr(e->name, "snake") || strcasestr(e->name, "blocks") ? &icon16_game : &icon16_app;
     return &icon16_file;
 }
@@ -218,7 +218,7 @@ const bitmap_t *fs_type_icon(const fs_entry_t *e)
 void os_open_file(window_t *owner, const char *path)
 {
     const char *x = fs_ext(path);
-    if (ext_in(x, "bmp")) app_viewer(path);
+    if (ext_in(x, "bmp jpg jpeg png")) app_viewer(path);
 #if BOARD_HAS_AUDIO
     else if (ext_in(x, "wav")) app_player(path);
 #endif

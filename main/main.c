@@ -44,6 +44,7 @@ static const char *TAG = "os";
 void usb_input_start(void);
 #if BOARD_HAS_TOUCH
 void touch_start(void);
+void touch_inject(int n, const int *xy);
 #endif
 void settings_load(void);
 void app_loader_start(void);
@@ -169,6 +170,13 @@ bool os_serial_command(const char *cmd, char *arg)
     if (!strcmp(cmd, "usbdbg")) { extern bool usb_debug; usb_debug = atoi(arg); return true; }
     if (!strcmp(cmd, "exists")) { serial_printf("%s\n", fs_is_dir(arg) ? "dir" : fs_exists(arg) ? "file" : "none"); return true; }
     if (!strcmp(cmd, "rm")) { serial_printf("%s\n", fs_delete(arg) ? "deleted" : "failed"); return true; }
+#if BOARD_HAS_TOUCH
+    if (!strcmp(cmd, "touch")) {        // touch [x y [x2 y2]]: fingers as the panel would report them
+        int p[4], n = sscanf(arg, "%d %d %d %d", &p[0], &p[1], &p[2], &p[3]);
+        touch_inject(n >= 4 ? 2 : n >= 2 ? 1 : 0, p);
+        return true;
+    }
+#endif
     if (!strcmp(cmd, "launch")) { ev_call(launch_cmd, arg); vTaskDelay(pdMS_TO_TICKS(150)); ev_call_sync(NULL, NULL); return true; }
     return false;
 }

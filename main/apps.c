@@ -23,7 +23,7 @@ const app_def_t os_apps[] = {
     {"Help",      "&Help",               &icon16_help,     &icon32_help,     app_help,     APP_ON_DESKTOP},
     {"Benchmark", "&Benchmark",          &icon16_tasks,    &icon32_tasks,    app_bench,    APP_IN_PROGRAMS | APP_ON_DESKTOP},
     {"Gallery",   "&Widget Gallery",     &icon16_app,      &icon32_app,      app_gallery,  APP_IN_PROGRAMS},
-    {"Viewer",    "&Picture Viewer",     &icon16_image,    &icon32_image,    app_viewer,   APP_HIDDEN},
+    {"Viewer",    "&Picture Viewer",     &icon16_image,    &icon32_image,    app_viewer,   APP_IN_PROGRAMS | APP_ON_DESKTOP},
 };
 const int os_app_count = sizeof(os_apps) / sizeof(os_apps[0]);
 

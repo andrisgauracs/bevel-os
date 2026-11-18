@@ -227,7 +227,16 @@ static const char *const s_help_rows[][2] = {
     {"Ctrl+Left / Ctrl+Right", "Previous / next word"},
     {"PICTURE VIEWER", NULL},
     {"Arrow keys", "Scroll the picture"},
+    {"Left or right drag", "Scroll the picture"},
     {"+ / -", "Zoom in / out"},
+    {"F or double-click", "Fit to screen, on / off"},
+#if BOARD_HAS_TOUCH
+    {"Pinch with two fingers", "Zoom in / out, and move the picture"},
+    {"TOUCHSCREEN", NULL},
+    {"Tap", "Click"},
+    {"Touch and move", "Scroll lists, text and pages; elsewhere drag"},
+    {"Touch and hold", "Right click"},
+#endif
     {"DOOM", NULL},
     {"Arrow keys", "Move and turn"},
     {"Ctrl / Space", "Fire / open doors and use switches"},

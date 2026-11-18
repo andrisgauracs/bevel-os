@@ -11,6 +11,10 @@ static window_t *s_bottom, *s_top;      // z-order
 static window_t *s_dead;                // destroyed, not yet freed (linked via ->next)
 static window_t *s_active;              // window with the keyboard, NULL = shell (desktop/taskbar)
 static widget_t *s_capture;             // widget that got the mouse-down
+static widget_t *s_pinch;               // widget under a two-finger gesture
+static widget_t *s_touch_scroll;        // widget a finger is scrolling
+static bool s_touch_scroll_popup;       // ... or the open drop-down list
+static int s_touch_y, s_touch_rest;     // the finger's last height; pixels not yet a whole row
 static const bitmap_t *s_cursor, *s_cursor_wanted;
 static int s_busy;
 
@@ -453,6 +457,8 @@ void wm_destroy(window_t *w)
         if (d->owner == w && !(d->flags & WIN_DEAD)) { d->dlg_done = true; d->dlg_result = ID_CANCEL; wm_invalidate(d); d->flags |= WIN_HIDDEN; }
     }
     if (s_capture && s_capture->win == w) s_capture = NULL;
+    if (s_pinch && s_pinch->win == w) s_pinch = NULL;
+    if (s_touch_scroll && s_touch_scroll->win == w) s_touch_scroll = NULL;
     if (s_drag.win == w) s_drag.mode = 0, s_drag.win = NULL;
     if (s_tbtn.win == w) s_tbtn.win = NULL;
     unlink_win(w);
@@ -762,7 +768,10 @@ void wm_busy(bool on)
 {
     s_busy += on ? 1 : -1;
     if (s_busy < 0) s_busy = 0;
+    // hidden before the shape changes back, shown after it changed: touch never sees the arrow flash
+    if (!s_busy) input_pointer_busy(false);
     wm_set_cursor(s_cursor_wanted ? s_cursor_wanted : &cursor_arrow);
+    if (s_busy) input_pointer_busy(true);
 }
 
 static const bitmap_t *edge_cursor(int edges)
@@ -940,6 +949,90 @@ static void handle_mouse(int type, int x, int y, int btn)
 
 void ui_capture(widget_t *w) { s_capture = w; }
 
+// A pinch goes to the widget under the fingers when it began, if that widget asked for pinches.
+static void handle_pinch(const event_t *e)
+{
+    if (e->button == PINCH_BEGIN) {
+        s_pinch = NULL;
+        if (menu_is_open() || ui_popup_is_open() || s_drag.mode || s_tbtn.win || s_capture || e->y >= DESK_H) return;
+        window_t *w = window_at(e->x, e->y);
+        int edges, lx, ly;
+        if (!w || w->modal_children || hit_test(w, e->x, e->y, &edges) != HT_CLIENT) return;
+        widget_t *wd = widget_at(w, e->x, e->y, &lx, &ly);
+        if (!wd || !(wd->flags & WF_WANT_PINCH) || (wd->flags & WF_DISABLED)) return;
+        if (w != s_active || shell_has_focus()) wm_activate(w);
+        if (focusable(wd)) ui_focus(wd);
+        s_pinch = wd;
+    }
+    widget_t *wd = s_pinch;
+    if (!wd) return;
+    rect_t c;
+    wm_client_rect(wd->win, &c);
+    wd->cls->mouse(wd, EV_PINCH, e->x - c.x - wd->r.x, e->y - c.y - wd->r.y, e->scale, e->button);
+    if (e->button == PINCH_END) s_pinch = NULL;
+}
+
+int ui_touch_steps(int dy, int step)
+{
+    s_touch_rest += dy;
+    int n = s_touch_rest / step;
+    s_touch_rest -= n * step;
+    return n;
+}
+
+// Is what the finger started on something it scrolls? Scroll bars keep working as bars.
+static bool touch_scroll_begin(int x, int y)
+{
+    s_touch_scroll = NULL;
+    s_touch_scroll_popup = false;
+    s_touch_y = y;
+    s_touch_rest = 0;
+    if (ui_popup_is_open()) return s_touch_scroll_popup = ui_popup_scrolls_at(x, y);
+    if (menu_is_open() || s_drag.mode || s_tbtn.win || s_capture || y >= DESK_H) return false;
+    window_t *w = window_at(x, y);
+    int edges, lx, ly;
+    if (!w || w->modal_children || hit_test(w, x, y, &edges) != HT_CLIENT) return false;
+    widget_t *wd = widget_at(w, x, y, &lx, &ly);
+    if (!wd || !(wd->flags & WF_TOUCH_SCROLL) || (wd->flags & WF_DISABLED) || lx >= wd->r.w - 2 - SCROLL_W) return false;
+    if (w != s_active || shell_has_focus()) wm_activate(w);
+    if (focusable(wd)) ui_focus(wd);
+    s_touch_scroll = wd;
+    input_touch_hide_pointer();
+    return true;
+}
+
+// One finger, decided here because only the window manager knows what is under it. A drag on
+// anything that does not scroll is the left button, as it always was.
+static void handle_touch(const event_t *e)
+{
+    int x = e->x, y = e->y;
+    switch (e->button) {
+    case TOUCH_TAP: input_touch(x, y, true); input_touch(x, y, false); break;
+    case TOUCH_LONG: input_touch_right_click(x, y); break;
+    case TOUCH_DRAG_BEGIN:
+        if (!touch_scroll_begin(x, y)) input_touch(x, y, true);
+        break;
+    case TOUCH_DRAG_MOVE: {
+        input_touch_latest(&x, &y);
+        int dy = y - s_touch_y;
+        if (s_touch_scroll_popup) { s_touch_y = y; ui_popup_touch_scroll(dy); }
+        else if (s_touch_scroll) {
+            widget_t *wd = s_touch_scroll;
+            rect_t c;
+            wm_client_rect(wd->win, &c);
+            s_touch_y = y;
+            if (dy) wd->cls->mouse(wd, EV_TOUCH_SCROLL, x - c.x - wd->r.x, y - c.y - wd->r.y, dy, 0);
+        } else input_touch(x, y, true);
+        break;
+    }
+    case TOUCH_DRAG_END:
+        if (!s_touch_scroll && !s_touch_scroll_popup) input_touch(x, y, false);
+        s_touch_scroll = NULL;
+        s_touch_scroll_popup = false;
+        break;
+    }
+}
+
 // ---------------------------------------------------------------- pump
 
 static uint32_t s_fps, s_fps_count, s_fps_t0;
@@ -962,6 +1055,8 @@ static void dispatch(const event_t *e)
         handle_mouse(EV_WHEEL, x, y, e->x);
         break;
     }
+    case EV_PINCH: handle_pinch(e); break;
+    case EV_TOUCH: handle_touch(e); break;
     case EV_CALL: if (e->fn) e->fn(e->arg); break;
     }
 }

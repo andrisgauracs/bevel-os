@@ -15,6 +15,7 @@
 #define BOARD_HAS_AUDIO       0       // no codec, no amplifier, no speaker
 #define BOARD_HAS_SD          0       // no card reader: the drive lives in the flash (user decision)
 #define BOARD_HAS_ETH         0
+#define BOARD_HAS_WALLPAPER   0       // not with this much RAM
 #define BOARD_HAS_CAMERA      0
 #define BOARD_HAS_WIFI_REMOTE 0       // Wi-Fi is this chip's own radio
 #define BOARD_CONSOLE_USB_JTAG 0      // console, logs and the command channel on UART0 (the COM port)
