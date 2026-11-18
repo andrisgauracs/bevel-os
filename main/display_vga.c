@@ -43,7 +43,8 @@ void disp_snapshot(uint16_t *dst, bool hide_cursor) { disp_snapshot_rows(dst, 0,
 
 void disp_snapshot_rows(uint16_t *dst, int y0, int rows, bool hide_cursor)
 {
-    static DRAM_ATTR uint8_t s_row[SCREEN_W];
+    // On the stack: the web page's task and the serial dump (GUI task) can be in here at the same time.
+    uint8_t row[SCREEN_W];
     uint8_t *fb = vga_fb();
     if (!dst || !fb || y0 < 0 || rows <= 0 || y0 + rows > SCREEN_H) return;
     // The pointer lives in the scan-out, not in the framebuffer, so taking it out of the picture also
@@ -52,10 +53,10 @@ void disp_snapshot_rows(uint16_t *dst, int y0, int rows, bool hide_cursor)
     vga_cursor_get(NULL, NULL, &shown);
     if (hide_cursor && shown) vga_cursor_show(false);
     for (int y = y0; y < y0 + rows; y++) {
-        memcpy(s_row, fb + (size_t)y * SCREEN_W, SCREEN_W);
-        vga_cursor_overlay_row(s_row, y);
+        memcpy(row, fb + (size_t)y * SCREEN_W, SCREEN_W);
+        vga_cursor_overlay_row(row, y);
         uint16_t *d = dst + (size_t)(y - y0) * SCREEN_W;
-        for (int x = 0; x < SCREEN_W; x++) d[x] = s_rgb222_to_565[s_row[x]];
+        for (int x = 0; x < SCREEN_W; x++) d[x] = s_rgb222_to_565[row[x]];
     }
     if (hide_cursor && shown) vga_cursor_show(true);
 }
