@@ -75,7 +75,7 @@ static const char s_files_page[] =
 " for(const q of parts){acc+='/'+q;h+='<span>&rsaquo;</span><button data-p=\"'+esc(acc)+'\">'+esc(q)+'</button>'}\n"
 " h+='<span id=free>'+size(j.free)+' free of '+size(j.total)+'</span>';$('crumbs').innerHTML=h;\n"
 " let rows=cur!='/disk'?'<tr><td><a class=dir href=# data-p=\"'+esc(cur.slice(0,cur.lastIndexOf('/')))+'\">..</a></td><td></td><td></td></tr>':'';\n"
-" for(const e of j.items){const p=cur+'/'+e.name,fixed=p=='/disk/SD';\n"
+" for(const e of j.items){const p=cur+'/'+e.name,fixed=p=='/disk/SD'||p=='/disk/USB';\n"
 "  const act=fixed?'<td></td>':'<td class=a><button class=act data-ren=\"'+esc(p)+'\">Rename</button>'\n"
 "   +'<button class=\"act del\" data-del=\"'+esc(p)+'\" data-dir='+(e.dir?1:0)+'>Delete</button></td>';\n"
 "  rows+=e.dir?'<tr><td><a class=dir href=# data-p=\"'+esc(p)+'\">'+esc(e.name)+'/</a></td><td></td>'+act+'</tr>'\n"
@@ -293,11 +293,7 @@ static esp_err_t put_post(httpd_req_t *req)
 // The drive and the card's mount point are not files to delete or rename.
 static bool changeable(const char *path)
 {
-    if (!strcmp(path, DISK_ROOT)) return false;
-#ifdef SD_ROOT
-    if (!strcmp(path, SD_ROOT)) return false;
-#endif
-    return true;
+    return !storage_is_mount_point(path);
 }
 
 static esp_err_t delete_post(httpd_req_t *req)

@@ -11,6 +11,7 @@
 #include "esp_app_desc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "board.h"
 #include "boot.h"
 #include "comp.h"
@@ -29,6 +30,8 @@ static bool s_new_firmware;   // this firmware has not written its bundled files
 
 #if BOARD_HAS_SD
 static void sd_task(void *arg);
+static TaskHandle_t s_sd_task;
+static SemaphoreHandle_t s_sd_eject_done;
 #endif
 
 static void restore_file(const char *path, const char *data, size_t len, bool if_differs)
@@ -78,6 +81,7 @@ bool storage_init(void)
 #if BOARD_HAS_SD
         mkdir(SD_ROOT, 0777);    // the folder the card is mounted on
 #endif
+        mkdir(USB_ROOT, 0777);   // and the one a USB stick is mounted on
         // The bundled programs are kept in the firmware too and put back if missing or outdated.
         // One block of the boot bar per program: after a firmware update these are rewritten, which
         // is the part of the boot the user notices (Doom.elf alone is most of a megabyte).
@@ -112,7 +116,8 @@ bool storage_init(void)
         }
     }
 #if BOARD_HAS_SD
-    xTaskCreatePinnedToCore(sd_task, "sdcard", 4096, NULL, 2, NULL, SYS_CORE);
+    s_sd_eject_done = xSemaphoreCreateBinary();
+    xTaskCreatePinnedToCore(sd_task, "sdcard", 4096, NULL, 2, &s_sd_task, SYS_CORE);
 #endif
     return s_mounted;
 }
@@ -125,6 +130,8 @@ bool storage_ok(void) { return s_mounted; }
 static sdmmc_card_t *s_card;
 static sd_pwr_ctrl_handle_t s_sd_pwr;
 static volatile bool s_sd_mounted;
+static volatile bool s_sd_eject_req;
+static volatile bool s_sd_ejected;      // stays unmounted until the card has been taken out
 
 static bool sd_try_mount(void)
 {
@@ -161,8 +168,32 @@ static void sd_task(void *arg)
     // card slot waits until that link is up.
     while (!os_c6_link_up && os_uptime_ms() < 8000) vTaskDelay(pdMS_TO_TICKS(100));
     vTaskDelay(pdMS_TO_TICKS(300));
+    int misses = 0;
     for (;;) {
-        if (!s_sd_mounted) {
+        if (s_sd_eject_req) {
+            s_sd_eject_req = false;
+            if (s_sd_mounted) {
+                s_sd_mounted = false;
+                s_sd_ejected = true;
+                misses = 0;
+                esp_vfs_fat_sdcard_unmount(SD_ROOT, s_card);
+                s_card = NULL;
+                ESP_LOGI("disk", "SD card ejected");
+                ev_call(sd_changed, NULL);
+            }
+            xSemaphoreGive(s_sd_eject_done);
+        } else if (s_sd_ejected) {
+            // Without a card-detect switch, the only way to see that the card has left is to try it.
+            // A mount only reads, and nothing is shown while s_sd_mounted is false. Two misses in a
+            // row, so that one bad read does not bring an ejected card back.
+            if (sd_try_mount()) {
+                esp_vfs_fat_sdcard_unmount(SD_ROOT, s_card);
+                s_card = NULL;
+                misses = 0;
+            } else if (++misses >= 2) {
+                s_sd_ejected = false;
+            }
+        } else if (!s_sd_mounted) {
             if (sd_try_mount()) {
                 s_sd_mounted = true;
                 ESP_LOGI("disk", "SD card mounted: %s, %llu MB", s_card->cid.name,
@@ -176,15 +207,25 @@ static void sd_task(void *arg)
             ESP_LOGI("disk", "SD card removed");
             ev_call(sd_changed, NULL);
         }
-        vTaskDelay(pdMS_TO_TICKS(s_sd_mounted ? 2000 : 3000));
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_sd_mounted ? 2000 : 3000));    // an eject request ends the wait
     }
 }
 
 bool storage_sd_ok(void) { return s_sd_mounted; }
 
+static bool sd_eject(void)
+{
+    if (!s_sd_mounted) return false;
+    xSemaphoreTake(s_sd_eject_done, 0);
+    s_sd_eject_req = true;
+    xTaskNotifyGive(s_sd_task);
+    return xSemaphoreTake(s_sd_eject_done, pdMS_TO_TICKS(8000)) == pdTRUE;
+}
+
 void os_sd_summary(char *buf, int n)
 {
     uint64_t t, f;
+    if (s_sd_ejected) { snprintf(buf, n, "ejected, take the card out"); return; }
     if (!s_sd_mounted || esp_vfs_fat_info(SD_ROOT, &t, &f) != ESP_OK) { snprintf(buf, n, "no card"); return; }
     char a[20], b[20];
     os_fmt_size(a, sizeof(a), f);
@@ -202,12 +243,49 @@ bool storage_df(uint64_t *total, uint64_t *free_bytes)
     return esp_vfs_fat_info(DISK_ROOT, total, free_bytes) == ESP_OK;
 }
 
-bool storage_df_path(const char *path, uint64_t *total, uint64_t *free_bytes)
+bool storage_is_mount_point(const char *path)
 {
 #if BOARD_HAS_SD
-    size_t n = strlen(SD_ROOT);
-    if (s_sd_mounted && !strncmp(path, SD_ROOT, n) && (path[n] == '/' || !path[n])) return esp_vfs_fat_info(SD_ROOT, total, free_bytes) == ESP_OK;
+    if (!strcmp(path, SD_ROOT)) return true;
 #endif
+    return !strcmp(path, DISK_ROOT) || !strcmp(path, USB_ROOT);
+}
+
+static bool path_under(const char *path, const char *root)
+{
+    size_t n = strlen(root);
+    return !strncmp(path, root, n) && (path[n] == '/' || !path[n]);
+}
+
+const char *storage_volume_of(const char *path)
+{
+    if (storage_usb_ok() && path_under(path, USB_ROOT)) return USB_ROOT;
+#if BOARD_HAS_SD
+    if (s_sd_mounted && path_under(path, SD_ROOT)) return SD_ROOT;
+#endif
+    return NULL;
+}
+
+bool storage_path_gone(const char *path)
+{
+#if BOARD_HAS_SD
+    if (!s_sd_mounted && path_under(path, SD_ROOT)) return true;
+#endif
+    return !storage_usb_ok() && path_under(path, USB_ROOT);
+}
+
+bool storage_eject(const char *volume)
+{
+#if BOARD_HAS_SD
+    if (!strcmp(volume, SD_ROOT)) return sd_eject();
+#endif
+    return !strcmp(volume, USB_ROOT) && usb_storage_eject();
+}
+
+bool storage_df_path(const char *path, uint64_t *total, uint64_t *free_bytes)
+{
+    const char *volume = storage_volume_of(path);
+    if (volume) return esp_vfs_fat_info(volume, total, free_bytes) == ESP_OK;
     return storage_df(total, free_bytes);
 }
 
@@ -219,6 +297,7 @@ void os_shutdown_prepare(void)
 
 void storage_unmount(void)
 {
+    usb_storage_eject();
 #if BOARD_HAS_SD
     if (s_sd_mounted) { s_sd_mounted = false; esp_vfs_fat_sdcard_unmount(SD_ROOT, s_card); s_card = NULL; }
 #endif

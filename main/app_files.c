@@ -78,8 +78,9 @@ int fs_list(const char *dir, fs_entry_t **out)
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
-        // the folder the SD card is mounted on only shows while a card is in the slot
+        // the folders a card or stick is mounted on only show while one is there
         if (!storage_sd_ok() && !strcmp(dir, DISK_ROOT) && !strcmp(de->d_name, "SD")) continue;
+        if (!storage_usb_ok() && !strcmp(dir, DISK_ROOT) && !strcmp(de->d_name, "USB")) continue;
         if (n == cap) {
             cap = cap ? cap * 2 : 32;
             fs_entry_t *nl = os_grow(list, n * sizeof(fs_entry_t), cap * sizeof(fs_entry_t));
@@ -105,6 +106,7 @@ int fs_list(const char *dir, fs_entry_t **out)
 
 bool fs_delete(const char *path)
 {
+    if (storage_is_mount_point(path)) return false;     // it would empty the whole card or stick
     if (fs_is_dir(path)) {
         fs_entry_t *list;
         int n = fs_list(path, &list);
@@ -366,7 +368,7 @@ static const char *child_on_way(const char *from, const char *to, char *buf, int
 
 typedef struct {
     window_t *win;
-    widget_t *list, *path, *up, *refresh, *status;
+    widget_t *list, *path, *up, *refresh, *eject, *status;
     crumbs_t crumbs;
     char dir[256];
     fs_entry_t *ents;
@@ -376,19 +378,31 @@ typedef struct {
 static char s_fclip[300];
 static bool s_fclip_cut;
 
-enum { FC_OPEN = 1, FC_NEW_FOLDER, FC_NEW_FILE, FC_RENAME, FC_DELETE, FC_CLOSE, FC_CUT, FC_COPY, FC_PASTE, FC_REFRESH, FC_UP, FC_NEW_WINDOW };
+enum { FC_OPEN = 1, FC_NEW_FOLDER, FC_NEW_FILE, FC_RENAME, FC_DELETE, FC_CLOSE, FC_CUT, FC_COPY, FC_PASTE, FC_REFRESH, FC_UP, FC_NEW_WINDOW, FC_EJECT };
+
+// The row above the list: the Eject button only takes room while the folder is on a card or stick.
+static void files_layout_bar(files_t *f)
+{
+    int cw = wm_client_w(f->win);
+    bool eject = storage_volume_of(f->dir) != NULL;
+    ui_show(f->eject, eject);
+    ui_set_rect(f->eject, cw - 80, 3, 48, 20);
+    ui_set_rect(f->path, 32, 3, cw - (eject ? 116 : 64), 20);
+    ui_set_rect(f->refresh, cw - 28, 3, 24, 20);
+}
 
 static void files_get(widget_t *lv, int i, lv_item_t *it)
 {
     files_t *f = lv->win->user;
     static char size[24];
     fs_entry_t *e = &f->ents[i];
-    bool card = e->is_dir && !strcmp(f->dir, DISK_ROOT) && !strcmp(e->name, "SD");
+    bool top = e->is_dir && !strcmp(f->dir, DISK_ROOT);
+    const char *volume = top && !strcmp(e->name, "SD") ? "SD card" : top && !strcmp(e->name, "USB") ? "USB stick" : NULL;
     it->text = e->name;
-    it->icon = card ? &icon16_drive : fs_type_icon(e);
+    it->icon = volume ? &icon16_drive : fs_type_icon(e);
     if (e->is_dir) size[0] = 0; else os_fmt_size(size, sizeof(size), e->size);
     it->col[0] = size;
-    it->col[1] = card ? "SD card" : fs_type_name(e);
+    it->col[1] = volume ? volume : fs_type_name(e);
 }
 
 static void files_load(files_t *f, const char *select)
@@ -406,6 +420,7 @@ static void files_load(files_t *f, const char *select)
     ui_listview_select(f->list, sel);
     ui_invalidate(f->path);
     ui_enable(f->up, strcmp(f->dir, DISK_ROOT) != 0);
+    files_layout_bar(f);
     char title[300];
     snprintf(title, sizeof(title), "Files - %s", strcmp(f->dir, DISK_ROOT) ? fs_basename(f->dir) : "Drive");
     wm_set_title(f->win, title);
@@ -444,6 +459,7 @@ static void files_up(files_t *f)
 static void files_up_click(widget_t *b, int code) { files_up(b->win->user); }
 static void files_command(window_t *w, int cmd);
 static void files_refresh_click(widget_t *b, int code) { files_command(b->win, FC_REFRESH); }
+static void files_eject_click(widget_t *b, int code) { files_command(b->win, FC_EJECT); }
 
 static void files_open(files_t *f)
 {
@@ -557,7 +573,8 @@ static void files_paste(files_t *f)
     files_load(f, name);
 }
 
-// The SD card came or went: every open Files window lists its folder again.
+// A card or stick came or went: every open Files window lists its folder again. The empty folder it
+// was mounted on still exists on the drive, so a window that was inside it has to be moved out.
 void files_refresh_all(void)
 {
     for (window_t *w = wm_top(); w; w = w->prev) {
@@ -566,9 +583,34 @@ void files_refresh_all(void)
         fs_entry_t *e = files_sel(f);
         char keep[68] = "";
         if (e) strlcpy(keep, e->name, sizeof(keep));
-        if (!fs_is_dir(f->dir)) strcpy(f->dir, DISK_ROOT);
+        if (storage_path_gone(f->dir) || !fs_is_dir(f->dir)) strcpy(f->dir, DISK_ROOT);
         files_load(f, keep);
     }
+}
+
+// What Eject applies to: the card or stick this folder is on, or the one selected in the top folder.
+static const char *files_volume(files_t *f)
+{
+    const char *v = storage_volume_of(f->dir);
+    fs_entry_t *e = files_sel(f);
+    if (v || !e || !e->is_dir || strcmp(f->dir, DISK_ROOT)) return v;
+    char p[300];
+    fs_join(p, sizeof(p), f->dir, e->name);
+    return storage_is_mount_point(p) ? storage_volume_of(p) : NULL;
+}
+
+static void files_eject(files_t *f)
+{
+    const char *v = files_volume(f);
+    if (!v) return;
+    const char *what = strcmp(v, USB_ROOT) ? "SD card" : "USB stick";
+    char msg[80];
+    wm_busy(true);
+    bool ok = storage_eject(v);
+    wm_busy(false);
+    files_refresh_all();
+    snprintf(msg, sizeof(msg), ok ? "The %s can now be removed." : "The %s could not be ejected.", what);
+    msgbox(f->win, "Eject", msg, ok ? MB_INFO : MB_ERROR, MB_OK);
 }
 
 static void files_command(window_t *w, int cmd)
@@ -587,6 +629,7 @@ static void files_command(window_t *w, int cmd)
     case FC_REFRESH: { fs_entry_t *e = files_sel(f); char n[68] = ""; if (e) strlcpy(n, e->name, sizeof(n)); files_load(f, n); break; }
     case FC_UP: files_up(f); break;
     case FC_NEW_WINDOW: app_files(f->dir); break;
+    case FC_EJECT: files_eject(f); break;
     }
 }
 
@@ -598,6 +641,7 @@ static int files_menu_state(window_t *w, int cmd)
     case FC_OPEN: case FC_RENAME: case FC_DELETE: case FC_CUT: case FC_COPY: return has ? 0 : MI_DISABLED;
     case FC_PASTE: return s_fclip[0] ? 0 : MI_DISABLED;
     case FC_UP: return strcmp(f->dir, DISK_ROOT) ? 0 : MI_DISABLED;
+    case FC_EJECT: return files_volume(f) ? 0 : MI_DISABLED;
     }
     return 0;
 }
@@ -610,6 +654,7 @@ static const menu_item_t fm_file[] = {
     {"-", 0, NULL, NULL, 0},
     {"&Rename...\tF2", FC_RENAME, NULL, NULL, 0},
     {"&Delete\tDel", FC_DELETE, NULL, NULL, 0},
+    {"E&ject", FC_EJECT, NULL, NULL, 0},
     {"-", 0, NULL, NULL, 0},
     {"New &Window", FC_NEW_WINDOW, NULL, NULL, 0},
     {"&Close\tAlt+F4", FC_CLOSE, NULL, NULL, 0},
@@ -628,7 +673,7 @@ static const menu_item_t fm_go[] = {
 };
 static const menu_item_t fm_bar[] = {{"&File", 0, fm_file, NULL, 0}, {"&Edit", 0, fm_edit, NULL, 0}, {"&Go", 0, fm_go, NULL, 0}, {NULL, 0, NULL, NULL, 0}};
 
-static menu_item_t s_ctx_items[10];
+static menu_item_t s_ctx_items[12];
 static void files_ctx_cb(void *ctx, int cmd)
 {
     window_t *w = ctx;
@@ -655,6 +700,10 @@ static void files_list_action(widget_t *lv, int code)
         }
         s_ctx_items[n++] = (menu_item_t){"-", 0, NULL, NULL, 0};
         s_ctx_items[n++] = (menu_item_t){"New &Folder...", FC_NEW_FOLDER, NULL, NULL, 0};
+        if (files_volume(f)) {
+            s_ctx_items[n++] = (menu_item_t){"-", 0, NULL, NULL, 0};
+            s_ctx_items[n++] = (menu_item_t){"E&ject", FC_EJECT, NULL, NULL, 0};
+        }
         s_ctx_items[n] = (menu_item_t){NULL, 0, NULL, NULL, 0};
         int x, y;
         ui_listview_context_pos(lv, &x, &y);
@@ -690,8 +739,7 @@ static void files_resize(window_t *w)
 {
     files_t *f = w->user;
     int cw = wm_client_w(w), ch = wm_client_h(w);
-    ui_set_rect(f->path, 32, 3, cw - 64, 20);
-    ui_set_rect(f->refresh, cw - 28, 3, 24, 20);
+    files_layout_bar(f);
     ui_set_rect(f->list, 4, 26, cw - 8, ch - 26 - 22);
     ui_set_rect(f->status, 8, ch - 17, cw - 16, 14);
 }
@@ -716,6 +764,8 @@ void app_files(const char *arg)
     f->up = tool_button(w, 4, 3, &icon16_up, files_up_click);
     f->path = crumbs_new(w, 32, 3, 376, &f->crumbs, f->dir, files_go);
     f->refresh = tool_button(w, 412, 3, &icon16_refresh, files_refresh_click);
+    f->eject = ui_button(w, 360, 3, 48, 20, "Eject", files_eject_click);
+    f->eject->flags &= ~WF_TABSTOP;
     f->list = ui_listview(w, 4, 26, 432, 250, files_get);
     static const char *const titles[] = {"Name", "Size", "Type"};
     static const int widths[] = {230, 90, 90};

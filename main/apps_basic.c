@@ -43,6 +43,7 @@ static void sys_paint(widget_t *w, gfx_t *g)
     labels[n] = "Flash:"; snprintf(vals[n++], 64, "%u MB", (unsigned)(flash >> 20));
     labels[n] = "Drive:"; os_disk_summary(vals[n++], 64);
     labels[n] = "SD card:"; os_sd_summary(vals[n++], 64);
+    labels[n] = "USB stick:"; os_usb_summary(vals[n++], 64);
     labels[n] = "Display:";
 #if DISP_HAS_OVERLAYS
     snprintf(vals[n++], 64, "%d x %d DSI panel, 64 colours + overlays", SCREEN_W, SCREEN_H);

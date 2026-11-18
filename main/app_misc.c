@@ -608,7 +608,8 @@ static void term_exec(term_t *t, char *line)
                      "open <f>    open with its app    echo <txt> print text\n"
                      "mem         memory in use        df         drive space\n"
                      "ver         version              uptime     time since power-on\n"
-                     "clear       clear the screen     exit       close the terminal\n");
+                     "clear       clear the screen     exit       close the terminal\n"
+                     "eject       unmount the USB stick\n");
     } else if (!strcmp(c, "ls") || !strcmp(c, "dir")) {
         term_path(t, argv[1], a, sizeof(a));
         fs_entry_t *list;
@@ -685,6 +686,10 @@ static void term_exec(term_t *t, char *line)
     } else if (!strcmp(c, "df")) {
         os_sd_summary(a, sizeof(a));
         term_printf(t, "%s\n", a);
+        os_usb_summary(a, sizeof(a));
+        term_printf(t, "USB stick: %s\n", a);
+    } else if (!strcmp(c, "eject")) {
+        term_puts(t, usb_storage_eject() ? "The USB stick can be removed.\n" : "eject: no USB stick mounted\n");
     } else if (!strcmp(c, "ver")) {
         term_puts(t, OS_NAME " " OS_VERSION " on " OS_CHIP "\n");
     } else if (!strcmp(c, "uptime")) {
@@ -734,7 +739,7 @@ static void term_paint(widget_t *w, gfx_t *g)
 }
 
 static const char *const s_term_cmds[] = {
-    "cat", "cd", "clear", "cls", "cp", "del", "df", "dir", "echo", "edit", "exit", "help", "ls", "mem",
+    "cat", "cd", "clear", "cls", "cp", "del", "df", "dir", "echo", "edit", "eject", "exit", "help", "ls", "mem",
     "mkdir", "mv", "open", "pwd", "rm", "rmdir", "run", "type", "uptime", "ver",
 };
 

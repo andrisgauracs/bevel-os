@@ -292,19 +292,26 @@ static void iface_cb(hid_host_device_handle_t h, const hid_host_interface_event_
     }
 }
 
+// Counts HID interfaces appearing and being opened: usb_storage.c waits for this to stop moving.
+static volatile int s_hid_activity;
+int usb_hid_activity(void) { return s_hid_activity; }
+
 static void driver_cb(hid_host_device_handle_t h, const hid_host_driver_event_t event, void *arg)
 {
     hid_evt_t e = {.handle = h, .event = event};
+    s_hid_activity++;
     xQueueSend(s_evt_queue, &e, 0);
 }
 
-static void open_device(hid_host_device_handle_t h)
+// False only if the interface could not be claimed, which in practice means no host channel was free.
+static bool open_device(hid_host_device_handle_t h)
 {
     iface_t *it = NULL;
     for (int i = 0; i < MAX_IFACES; i++) if (!s_if[i].used) { it = &s_if[i]; break; }
-    if (!it) { ESP_LOGW(TAG, "too many HID interfaces"); return; }
+    if (!it) { ESP_LOGW(TAG, "too many HID interfaces"); return true; }
     const hid_host_device_config_t cfg = {.callback = iface_cb, .callback_arg = NULL};
-    if (hid_host_device_open(h, &cfg) != ESP_OK) return;
+    if (hid_host_device_open(h, &cfg) != ESP_OK) return false;
+    s_hid_activity++;
     memset(it, 0, sizeof(*it));
     it->handle = h;
     size_t dlen = 0;
@@ -316,7 +323,7 @@ static void open_device(hid_host_device_handle_t h)
         // nothing we understand (vendor interface): leave it idle
         ESP_LOGI(TAG, "interface %d: no keyboard/mouse usages, ignored", p.iface_num);
         hid_host_device_close(h);
-        return;
+        return true;
     }
     it->used = true;
     recount();
@@ -325,6 +332,22 @@ static void open_device(hid_host_device_handle_t h)
     ESP_LOGI(TAG, "interface %d: %s%s%s, %d fields, report IDs %s", p.iface_num, it->is_kbd ? "keyboard " : "",
              it->is_mouse ? (abs ? "absolute pointer " : "mouse ") : "", "", it->nf, it->has_ids ? "yes" : "no");
     if (hid_host_device_start(h) != ESP_OK) { it->used = false; recount(); }
+    return true;
+}
+
+// An interface found no channel. Input outranks a USB stick, so the stick gives its channels back if
+// this looks like something needed: a boot keyboard or mouse, or anything at all while one of the two
+// is missing. A receiver's vendor interface, with both already working, is not worth a stick.
+static void open_device_or_evict(hid_host_device_handle_t h)
+{
+    if (open_device(h)) return;
+    hid_host_dev_params_t p;
+    if (hid_host_device_get_params(h, &p) != ESP_OK) return;
+    if (p.proto == HID_PROTOCOL_NONE && s_kbd_count && s_mouse_count) return;
+    if (usb_storage_eject()) {
+        ESP_LOGW(TAG, "USB stick unmounted: its host channels were needed for input");
+        open_device(h);
+    }
 }
 
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -343,6 +366,7 @@ static bool enum_filter(const usb_device_desc_t *d, uint8_t *config)
     switch (d->bDeviceClass) {
     case USB_CLASS_HUB:
     case USB_CLASS_HID:
+    case USB_CLASS_MASS_STORAGE:
     case USB_CLASS_MISC:
         return true;
     case USB_CLASS_PER_INTERFACE:
@@ -376,7 +400,7 @@ static void hid_task(void *arg)
 {
     hid_evt_t e;
     while (1) {
-        if (xQueueReceive(s_evt_queue, &e, portMAX_DELAY) && e.event == HID_HOST_DRIVER_EVENT_CONNECTED) open_device(e.handle);
+        if (xQueueReceive(s_evt_queue, &e, portMAX_DELAY) && e.event == HID_HOST_DRIVER_EVENT_CONNECTED) open_device_or_evict(e.handle);
     }
 }
 
@@ -459,6 +483,8 @@ void usb_input_start(void)
     s_evt_queue = xQueueCreate(10, sizeof(hid_evt_t));
     xTaskCreatePinnedToCore(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), 10, NULL, SYS_CORE);
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+    extern void usb_storage_start(void);
+    usb_storage_start();    // before the first device is announced: clients only hear about new ones
     const hid_host_driver_config_t hcfg = {
         .create_background_task = true,
         .task_priority = 9,

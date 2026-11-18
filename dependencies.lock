@@ -298,6 +298,30 @@ dependencies:
     - esp32s31
     - linux
     version: 1.2.1
+  espressif/usb_host_msc:
+    component_hash: d8765c212bb4915d42560886fac3cc5059d61a0bfa14152b32ea9a5258e7a0c9
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    - name: espressif/usb
+      registry_url: https://components.espressif.com
+      require: public
+      rules:
+      - if: idf_version >=6.0
+      - if: target not in ["linux"]
+      version: ^1.0.0
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32p4
+    - esp32h4
+    - esp32s31
+    - linux
+    version: 1.3.0
   espressif/usb_host_uvc:
     component_hash: 183e5737a457f2e8d6b2cc6fa5a1ba6faa5f77e1b7d64f3fe57462ccf2a38e17
     dependencies:
@@ -349,7 +373,8 @@ direct_dependencies:
 - espressif/esp_wifi_remote
 - espressif/usb
 - espressif/usb_host_hid
+- espressif/usb_host_msc
 - idf
-manifest_hash: 14f6ce549718b58e44b23ae9a10900b29639c2559d7e315df2e5805dd5d86215
+manifest_hash: 589e502cd6a862f202ab0e6b33fef6fa1b7330033d1fb82e0a6521a209ae3edd
 target: esp32p4
 version: 3.0.0

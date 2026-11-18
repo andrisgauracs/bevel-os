@@ -40,13 +40,23 @@ bool os_task_kill(int task_id);             // false if task_id is not a loaded 
 #if BOARD_HAS_SD
 #define SD_ROOT DISK_ROOT "/SD"            // where a microSD card appears
 #endif
+#define USB_ROOT DISK_ROOT "/USB"          // where a USB stick appears
 bool storage_sd_ok(void);                  // false on boards without a card reader
+bool storage_is_mount_point(const char *path);  // the drive, or the folder a card or stick is mounted on
+const char *storage_volume_of(const char *path); // SD_ROOT or USB_ROOT if path is on that mounted volume, else NULL
+bool storage_path_gone(const char *path);       // path is where a card or stick would be, and none is mounted
+bool storage_eject(const char *volume);         // volume as returned by storage_volume_of
 bool storage_init(void);
 bool storage_ok(void);
 bool storage_df(uint64_t *total, uint64_t *free_bytes);
 bool storage_df_path(const char *path, uint64_t *total, uint64_t *free_bytes);  // of the volume holding path
 void storage_unmount(void);
 void os_fmt_size(char *buf, int n, uint64_t bytes);
+
+// usb_storage.c
+bool storage_usb_ok(void);                 // a stick is mounted at USB_ROOT
+bool usb_storage_eject(void);              // unmount it; false if there was none
+void os_usb_summary(char *buf, int n);     // "812.0 MB free of 960.0 MB" / "no stick"
 
 #if BOARD_HAS_WIFI_REMOTE
 // main.c: ESP-Hosted has its SDIO link to the ESP32-C6 running. The card slot and the C6 share one

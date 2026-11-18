@@ -149,6 +149,8 @@ bool os_serial_command(const char *cmd, char *arg)
 #endif
     if (!strcmp(cmd, "usbwd")) { extern volatile int usb_wd_off; usb_wd_off = !atoi(arg); return true; }
     if (!strcmp(cmd, "usbdev")) { extern void usb_list_devices(void); usb_list_devices(); return true; }
+    if (!strcmp(cmd, "usbeject")) { serial_printf("%s\n", usb_storage_eject() ? "ejected" : "no stick mounted"); return true; }
+    if (!strcmp(cmd, "usbdisk")) { char s[64]; os_usb_summary(s, sizeof(s)); serial_printf("usb stick: %s\n", s); return true; }
     if (!strcmp(cmd, "usbcycle")) { extern volatile int usb_force_cycle; usb_force_cycle = 1; return true; }
     if (!strcmp(cmd, "usbstat")) { extern int usb_keyboards(void), usb_mice(void); serial_printf("keyboards %d mice %d\n", usb_keyboards(), usb_mice()); return true; }
     if (!strcmp(cmd, "usblog")) {
